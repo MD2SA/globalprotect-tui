@@ -5,8 +5,8 @@ from an organisation-provided `PanGPLinux-*.tgz` tarball. It adds the systemd
 units, browser callback handler and NetworkManager `gpd0` workaround that the
 vendor's Arch support does not provide.
 
-Run it from the repository root through the compatibility wrapper, or directly
-from this directory:
+Run it from the repository root through the compatibility wrapper, or invoke
+the script directly:
 
 ```bash
 sudo ./gp_install_arch.sh ~/Downloads/PanGPLinux-*.tgz
