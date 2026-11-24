@@ -238,6 +238,7 @@ pub struct App {
     pub gpclient_log: Option<std::path::PathBuf>,
     gpclient_child: Option<std::process::Child>,
     pending_cookie: Option<String>,
+    sudo_cookie: Option<String>,
     auth_epoch: u64,
     sudo_epoch: u64,
     pub auth_pid: Option<u32>,
@@ -289,6 +290,7 @@ impl App {
             gpclient_log: None,
             gpclient_child: None,
             pending_cookie: None,
+            sudo_cookie: None,
             auth_epoch: 0,
             sudo_epoch: 0,
             auth_pid: None,
@@ -553,10 +555,19 @@ impl App {
             return;
         }
 
+        self.begin_sudo_connect(cookie);
+    }
+
+    /// Holds the SSO cookie until sudo authentication finishes. Keeping it out
+    /// of `pending_cookie` matters: the run loop drains that field every tick,
+    /// so re-arming it would reopen the prompt (and wipe what was typed).
+    fn begin_sudo_connect(&mut self, cookie: String) {
         self.state = VpnState::WaitingSudo;
-        self.pending_cookie = Some(cookie);
-        self.push_log("sudo needs a password; enter it in the prompt".to_string());
-        self.open_sudo_prompt(SudoAction::Connect);
+        self.sudo_cookie = Some(cookie);
+        if self.sudo_prompt.is_none() {
+            self.push_log("sudo needs a password; enter it in the prompt".to_string());
+            self.open_sudo_prompt(SudoAction::Connect);
+        }
     }
 
     fn start_gpclient(&mut self, cookie: String) {
@@ -680,6 +691,7 @@ impl App {
         self.sudo_epoch = self.sudo_epoch.wrapping_add(1);
         self.busy = false;
         self.pending_cookie = None;
+        self.sudo_cookie = None;
         self.state = match prompt.action {
             SudoAction::Connect => VpnState::Disconnected,
             SudoAction::Disconnect | SudoAction::Quit => VpnState::Connected,
@@ -696,7 +708,7 @@ impl App {
 
         match prompt.action {
             SudoAction::Connect => {
-                if let Some(cookie) = self.pending_cookie.take() {
+                if let Some(cookie) = self.sudo_cookie.take() {
                     self.start_gpclient(cookie);
                 } else {
                     self.busy = false;
@@ -1759,15 +1771,30 @@ mod tests {
         let mut app = test_app();
         app.state = VpnState::WaitingSudo;
         app.busy = true;
-        app.pending_cookie = Some("cookie".to_string());
-        app.open_sudo_prompt(SudoAction::Connect);
+        app.begin_sudo_connect("cookie".to_string());
 
         app.handle_sudo_key(KeyEvent::from(KeyCode::Esc));
 
         assert!(app.sudo_prompt.is_none());
         assert!(app.pending_cookie.is_none());
+        assert!(app.sudo_cookie.is_none());
         assert_eq!(app.state, VpnState::Disconnected);
         assert!(!app.busy);
+    }
+
+    #[test]
+    fn reentering_sudo_connect_keeps_the_typed_password() {
+        let mut app = test_app();
+        app.begin_sudo_connect("first".to_string());
+        app.handle_sudo_key(KeyEvent::from(KeyCode::Char('x')));
+
+        // The run loop used to call this again on every tick.
+        app.begin_sudo_connect("second".to_string());
+
+        let prompt = app.sudo_prompt.as_ref().unwrap();
+        assert_eq!(prompt.password, b"x");
+        assert_eq!(app.sudo_cookie.as_deref(), Some("second"));
+        assert!(app.pending_cookie.is_none());
     }
 
     #[test]

@@ -370,7 +370,7 @@ fn state_hint(app: &App) -> Option<Line<'static>> {
             Color::Yellow,
         ),
         VpnState::WaitingSudo => (
-            "The terminal will ask for your sudo password.",
+            "Enter your sudo password in the prompt to start the tunnel.",
             Color::Yellow,
         ),
         VpnState::Connecting => ("Starting the tunnel...", Color::Yellow),
