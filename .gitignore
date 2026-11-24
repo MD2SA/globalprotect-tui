@@ -1,0 +1,25 @@
+# Rust build output
+/target/
+/gp-tui/target/
+
+# Local test/build output
+*.log
+*.tmp
+diagnostics.txt
+gpclient.log
+
+# Vendor packages and test artifacts
+PanGPLinux-*.tgz
+GlobalProtect_*.deb
+GlobalProtect_*.rpm
+
+# Local configuration and environment
+.env
+.env.*
+config.toml
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+*.swp
+*~

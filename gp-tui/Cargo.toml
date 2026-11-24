@@ -1,0 +1,19 @@
+[package]
+name = "gp-tui"
+version = "0.11.0"
+edition = "2021"
+description = "Unofficial TUI for GlobalProtect on Arch Linux (official CLI or globalprotect-openconnect)"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+crossterm = "0.28"
+dirs = "5"
+ratatui = "0.29"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+[[bin]]
+name = "gp-tui"
+path = "src/main.rs"
