@@ -4,6 +4,8 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
@@ -343,9 +345,9 @@ pub struct AuthResult {
 }
 
 /// Runs `gpauth` as the user. It opens the system browser and returns the
-/// authentication cookie. `on_start` receives the process id so the TUI can
-/// cancel it. Safe to run in a worker while the TUI stays visible.
-pub fn gpclient_auth(portal: &str, on_start: impl FnOnce(u32)) -> Result<AuthResult, String> {
+/// authentication cookie. The process id is published through `auth_pid` so
+/// the TUI can cancel it without a broad `pkill`.
+pub fn gpclient_auth(portal: &str, auth_pid: Arc<AtomicU32>) -> Result<AuthResult, String> {
     let mut command = Command::new("gpauth");
     command
         .args([portal.trim(), "--browser"])
@@ -355,10 +357,10 @@ pub fn gpclient_auth(portal: &str, on_start: impl FnOnce(u32)) -> Result<AuthRes
     let child = command
         .spawn()
         .map_err(|error| format!("failed to run gpauth: {error}"))?;
-    on_start(child.id());
-    let output = child
-        .wait_with_output()
-        .map_err(|error| format!("waiting for gpauth: {error}"))?;
+    auth_pid.store(child.id(), Ordering::SeqCst);
+    let output = child.wait_with_output();
+    auth_pid.store(0, Ordering::SeqCst);
+    let output = output.map_err(|error| format!("waiting for gpauth: {error}"))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = clean_output(&String::from_utf8_lossy(&output.stderr));

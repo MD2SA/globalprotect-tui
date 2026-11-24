@@ -8,7 +8,7 @@ use ratatui::DefaultTerminal;
 use std::collections::VecDeque;
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
@@ -18,7 +18,6 @@ const MAX_LOGS: usize = 300;
 
 pub enum Msg {
     Snapshot(Snapshot),
-    AuthPid(u64, u32),
     GpclientAuth(u64, Result<client::AuthResult, String>),
     GpclientDisconnected(Result<(), String>),
     SudoAuth(u64, Result<(), String>),
@@ -250,7 +249,7 @@ pub struct App {
     sudo_cookie: Option<String>,
     auth_epoch: u64,
     sudo_epoch: u64,
-    pub auth_pid: Option<u32>,
+    auth_pid: Arc<AtomicU32>,
     auth_started: Option<Instant>,
     notice: Option<(String, Instant)>,
     tx: Sender<Msg>,
@@ -298,7 +297,7 @@ impl App {
             sudo_cookie: None,
             auth_epoch: 0,
             sudo_epoch: 0,
-            auth_pid: None,
+            auth_pid: Arc::new(AtomicU32::new(0)),
             auth_started: None,
             notice: None,
             tx,
@@ -491,13 +490,10 @@ impl App {
 
     fn cancel_auth(&mut self, timeout: bool) {
         self.auth_epoch = self.auth_epoch.wrapping_add(1);
-        if let Some(pid) = self.auth_pid.take() {
+        let pid = self.auth_pid.swap(0, Ordering::SeqCst);
+        if pid > 0 {
             let _ = Command::new("kill")
                 .args(["-INT", &pid.to_string()])
-                .status();
-        } else {
-            let _ = Command::new("pkill")
-                .args(["-INT", "-f", "gpauth"])
                 .status();
         }
         self.auth_started = None;
@@ -547,18 +543,16 @@ impl App {
         self.state = VpnState::WaitingBrowser;
         self.auth_epoch = self.auth_epoch.wrapping_add(1);
         let epoch = self.auth_epoch;
-        self.auth_pid = None;
-        self.auth_started = None;
+        self.auth_pid.store(0, Ordering::SeqCst);
+        self.auth_started = Some(Instant::now());
         self.push_log(format!("> gpauth {} --browser", self.cfg.portal().trim()));
         self.push_log("browser will open; complete SSO/MFA. The TUI stays visible.".to_string());
 
         let tx = self.tx.clone();
-        let pid_tx = self.tx.clone();
+        let auth_pid = Arc::clone(&self.auth_pid);
         let portal = self.cfg.portal().to_string();
         thread::spawn(move || {
-            let result = client::gpclient_auth(&portal, move |pid| {
-                let _ = pid_tx.send(Msg::AuthPid(epoch, pid));
-            });
+            let result = client::gpclient_auth(&portal, auth_pid);
             let _ = tx.send(Msg::GpclientAuth(epoch, result));
         });
     }
@@ -1154,7 +1148,7 @@ impl App {
     /// signalled. There is no terminal left to prompt on, so only a cached
     /// sudo timestamp can disconnect a gpclient tunnel started by this TUI.
     fn shutdown_from_signal(&mut self) {
-        if self.auth_pid.is_some() || self.state == VpnState::WaitingBrowser {
+        if self.auth_pid.load(Ordering::Relaxed) > 0 || self.state == VpnState::WaitingBrowser {
             self.cancel_auth(false);
         }
 
@@ -1559,18 +1553,11 @@ impl App {
                     self.push_log(format!("state: {}", self.state.label()));
                 }
             }
-            Msg::AuthPid(epoch, pid) => {
-                if epoch == self.auth_epoch {
-                    self.auth_pid = Some(pid);
-                    self.auth_started = Some(Instant::now());
-                    self.push_log(format!("gpauth started (pid {pid})"));
-                }
-            }
             Msg::GpclientAuth(epoch, result) => {
                 if epoch != self.auth_epoch {
                     return;
                 }
-                self.auth_pid = None;
+                self.auth_pid.store(0, Ordering::SeqCst);
                 self.auth_started = None;
                 match result {
                     Ok(auth) => {
