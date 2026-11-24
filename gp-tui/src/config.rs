@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn default_backend() -> String {
     "auto".to_string()
@@ -47,20 +47,61 @@ impl Config {
         dirs::config_dir().map(|dir| dir.join("gp-tui").join("config.toml"))
     }
 
-    pub fn load() -> Self {
+    pub fn load() -> (Self, Option<String>) {
         let Some(path) = Self::path() else {
-            return Self::default();
+            return (
+                Self::default(),
+                Some("cannot determine config directory; using defaults".to_string()),
+            );
         };
-        let mut config = match std::fs::read_to_string(&path) {
-            Ok(contents) => toml::from_str(&contents).unwrap_or_default(),
-            Err(_) => Self::default(),
+        Self::load_from(&path)
+    }
+
+    fn load_from(path: &Path) -> (Self, Option<String>) {
+        let contents = match std::fs::read_to_string(path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return (Self::default(), None);
+            }
+            Err(error) => {
+                return (
+                    Self::default(),
+                    Some(format!(
+                        "could not read {}: {error}; using defaults",
+                        path.display()
+                    )),
+                );
+            }
         };
-        config.migrate();
-        config
+
+        match toml::from_str::<Self>(&contents) {
+            Ok(mut config) => {
+                config.migrate();
+                (config, None)
+            }
+            Err(error) => {
+                let backup = path.with_extension("toml.bak");
+                let backup_note = match std::fs::copy(path, &backup) {
+                    Ok(_) => format!("backup saved to {}", backup.display()),
+                    Err(copy_error) => format!("could not back up the file: {copy_error}"),
+                };
+                (
+                    Self::default(),
+                    Some(format!(
+                        "could not parse {}: {error}; using defaults ({backup_note})",
+                        path.display()
+                    )),
+                )
+            }
+        }
     }
 
     pub fn save(&self) -> Result<()> {
         let path = Self::path().context("cannot determine config directory")?;
+        self.save_to(&path)
+    }
+
+    fn save_to(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating {}", parent.display()))?;
@@ -68,7 +109,12 @@ impl Config {
         let mut config = self.clone();
         config.migrate();
         let contents = toml::to_string_pretty(&config)?;
-        std::fs::write(&path, contents).with_context(|| format!("writing {}", path.display()))?;
+        let temp = path.with_extension("toml.tmp");
+        std::fs::write(&temp, contents).with_context(|| format!("writing {}", temp.display()))?;
+        if let Err(error) = std::fs::rename(&temp, path) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(error).with_context(|| format!("replacing {}", path.display()));
+        }
         Ok(())
     }
 
@@ -236,6 +282,60 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn temp_path() -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("gp-tui-config-{}-{n}.toml", std::process::id()))
+    }
+
+    #[test]
+    fn missing_config_is_silent() {
+        let path = temp_path();
+        let (config, warning) = Config::load_from(&path);
+        assert!(warning.is_none());
+        assert!(config.profiles.is_empty());
+    }
+
+    #[test]
+    fn save_is_atomic_and_roundtrips() {
+        let path = temp_path();
+        let mut config = Config::default();
+        config
+            .add_profile("work".to_string(), "vpn.example.com".to_string())
+            .unwrap();
+        config.set_username("user".to_string());
+
+        config.save_to(&path).unwrap();
+        assert!(!path.with_extension("toml.tmp").exists());
+
+        let (loaded, warning) = Config::load_from(&path);
+        assert!(warning.is_none());
+        assert_eq!(loaded.active, "work");
+        assert_eq!(loaded.portal(), "vpn.example.com");
+        assert_eq!(loaded.username(), "user");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn corrupt_config_warns_and_keeps_a_backup() {
+        let path = temp_path();
+        let contents = "this is not valid toml = [";
+        std::fs::write(&path, contents).unwrap();
+
+        let (config, warning) = Config::load_from(&path);
+        let warning = warning.expect("corrupt config should warn");
+        assert!(config.profiles.is_empty());
+        assert!(warning.contains("could not parse"));
+
+        let backup = path.with_extension("toml.bak");
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), contents);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&backup);
+    }
 
     #[test]
     fn old_config_migrates_to_default_profile() {

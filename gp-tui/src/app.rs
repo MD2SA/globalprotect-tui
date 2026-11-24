@@ -318,8 +318,15 @@ impl App {
         app
     }
 
+    pub fn report_startup_warning(&mut self, warning: String) {
+        self.push_log(format!("config warning: {warning}"));
+        self.set_notice("Config warning; see logs");
+    }
+
     pub fn run(&mut self, terminal: &mut DefaultTerminal, shutdown: Arc<AtomicBool>) -> Result<()> {
-        let mut last_poll = Instant::now() - Duration::from_secs(60);
+        let mut last_poll = Instant::now()
+            .checked_sub(Duration::from_secs(60))
+            .unwrap_or_else(Instant::now);
 
         loop {
             if shutdown.load(Ordering::Relaxed) {

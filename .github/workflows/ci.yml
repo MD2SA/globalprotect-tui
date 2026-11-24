@@ -28,7 +28,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install test dependencies
-        run: sudo apt-get update && sudo apt-get install -y libarchive-tools binutils
+        run: sudo apt-get update && sudo apt-get install -y libarchive-tools binutils shellcheck
+      - name: Shellcheck installer scripts
+        run: shellcheck gp_install_arch.sh tests/installer/test_installer.sh
       - name: Syntax check installer
         run: bash -n gp_install_arch.sh
       - name: Syntax check installer tests

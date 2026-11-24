@@ -19,7 +19,10 @@ fn print_help() {
 }
 
 fn print_status() -> Result<()> {
-    let config = Config::load();
+    let (config, warning) = Config::load();
+    if let Some(warning) = warning {
+        eprintln!("gp-tui: {warning}");
+    }
     let preference = BackendPreference::parse(config.backend());
     let snapshot = client::snapshot(preference);
     let state = VpnState::from_snapshot(&snapshot.status).label();
@@ -60,15 +63,19 @@ fn main() -> Result<()> {
         anyhow::bail!("unknown argument: {arg} (try --help)");
     }
 
-    let config = Config::load();
+    let (config, warning) = Config::load();
     let shutdown = Arc::new(AtomicBool::new(false));
     for signal in [SIGHUP, SIGINT, SIGTERM] {
         signal_hook::flag::register(signal, Arc::clone(&shutdown))
             .map_err(|error| anyhow::anyhow!("cannot install signal handler: {error}"))?;
     }
 
+    let mut app = App::new(config);
+    if let Some(warning) = warning {
+        app.report_startup_warning(warning);
+    }
     let mut terminal = ratatui::init();
-    let result = App::new(config).run(&mut terminal, shutdown);
+    let result = app.run(&mut terminal, shutdown);
     ratatui::restore();
     result
 }
