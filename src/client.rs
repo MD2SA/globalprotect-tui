@@ -2,7 +2,7 @@
 
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 
@@ -158,16 +158,12 @@ fn official_snapshot() -> Snapshot {
 fn gpclient_snapshot() -> Snapshot {
     let lock = std::fs::read_to_string("/var/run/gpclient.lock").ok();
     let pid = lock.as_deref().and_then(lock_pid);
-    let running = pid.is_some_and(process_is_gpclient);
-    let ip = if running { tun_ip() } else { None };
-
-    let status = if !running {
-        "Disconnected"
-    } else if ip.is_some() {
-        "Connected"
-    } else {
-        "Connecting"
-    };
+    let pid_alive = pid
+        .map(|pid| Path::new(&format!("/proc/{pid}")).exists())
+        .unwrap_or(false);
+    let running = pid_alive || gpclient_running();
+    let ip = tun_ip();
+    let status = gpclient_status(running, ip.is_some());
 
     // A leftover lock with a dead PID is harmless: gpclient rewrites it when
     // the tunnel starts and its own is_running() check ignores dead PIDs. Do
@@ -188,9 +184,25 @@ fn gpclient_snapshot() -> Snapshot {
     }
 }
 
-fn process_is_gpclient(pid: u32) -> bool {
-    std::fs::read_link(format!("/proc/{pid}/exe"))
-        .map(|path| path.to_string_lossy().contains("gpclient"))
+fn gpclient_status(running: bool, has_ip: bool) -> &'static str {
+    if running && has_ip {
+        "Connected"
+    } else if running {
+        "Connecting"
+    } else if has_ip {
+        "Unknown"
+    } else {
+        "Disconnected"
+    }
+}
+
+fn gpclient_running() -> bool {
+    Command::new("pgrep")
+        .args(["-x", "gpclient"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
         .unwrap_or(false)
 }
 
@@ -734,6 +746,14 @@ mod tests {
         assert_eq!(lock_pid("1234\n"), Some(1234));
         assert_eq!(lock_pid("1234:8080"), Some(1234));
         assert_eq!(lock_pid("not-a-pid"), None);
+    }
+
+    #[test]
+    fn gpclient_status_uses_both_process_and_tunnel_ip() {
+        assert_eq!(gpclient_status(true, true), "Connected");
+        assert_eq!(gpclient_status(true, false), "Connecting");
+        assert_eq!(gpclient_status(false, true), "Unknown");
+        assert_eq!(gpclient_status(false, false), "Disconnected");
     }
 
     #[test]
