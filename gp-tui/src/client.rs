@@ -160,16 +160,14 @@ fn gpclient_snapshot() -> Snapshot {
     let lock = std::fs::read_to_string("/var/run/gpclient.lock").ok();
     let pid = lock.as_deref().and_then(lock_pid);
     let running = pid.is_some_and(process_is_gpclient);
-    let ip = tun_ip();
+    let ip = if running { tun_ip() } else { None };
 
-    let status = if running && ip.is_some() {
-        "Connected"
-    } else if running {
-        "Connecting"
-    } else if ip.is_some() {
-        "Unknown"
-    } else {
+    let status = if !running {
         "Disconnected"
+    } else if ip.is_some() {
+        "Connected"
+    } else {
+        "Connecting"
     };
 
     // A leftover lock with a dead PID is harmless: gpclient rewrites it when
