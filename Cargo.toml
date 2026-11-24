@@ -1,6 +1,6 @@
 [package]
 name = "gp-tui"
-version = "0.12.1"
+version = "0.12.2"
 edition = "2021"
 description = "Unofficial TUI for GlobalProtect on Arch Linux (official CLI or globalprotect-openconnect)"
 license = "MIT"
