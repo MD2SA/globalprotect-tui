@@ -1,36 +1,20 @@
-# GlobalProtect for Arch Linux (unofficial)
+# gp-tui
 
-An unofficial terminal UI for Palo Alto Networks GlobalProtect on Arch Linux,
-with an optional installer for the vendor's official CLI.
+An unofficial terminal UI for GlobalProtect on Arch Linux. It manages the
+installed client; it is not a VPN implementation.
 
-- **`gp-tui`** is the main project: a small terminal frontend for connecting,
-  disconnecting and inspecting status or logs. It works with either the official
-  CLI or the free [`globalprotect-openconnect`][gpoc] backend.
-- **`installers/arch/`** is optional: it installs the official GlobalProtect CLI
-  from the vendor `PanGPLinux-*.tgz` tarball, together with the systemd units and
-  browser callback handler that the vendor's Arch support is missing.
+- Connect and disconnect using the official CLI or the free
+  [`globalprotect-openconnect`](https://archlinux.org/packages/extra/x86_64/globalprotect-openconnect/)
+  backend.
+- Complete SSO/MFA in your browser; the TUI never stores passwords or session
+  cookies.
+- View connection status, profiles and client logs.
 
-It is not a VPN implementation and does not store passwords or session cookies.
-SAML/SSO/MFA stays in the system browser.
+## Quick start: free backend
 
-Repository layout:
-
-```
-src/               terminal UI and its tests
-install.sh         build and install the TUI
-Cargo.toml
-installers/arch/   optional official-CLI installer and tests
-docs/              TUI details, test and validation notes
-```
-
-[gpoc]: https://archlinux.org/packages/extra/x86_64/globalprotect-openconnect/
-
-## Quick start
-
-### Free backend (no vendor tarball)
-
-Requires an Arch desktop session and `sudo` access for the tunnel. Install the
-TUI from a release binary (no Rust needed):
+Requires Arch Linux (or an Arch-based distribution), x86_64, systemd, a desktop
+browser, `/dev/net/tun` and `sudo` access for the tunnel. Install the backend
+and prebuilt TUI:
 
 ```bash
 sudo pacman -S --needed globalprotect-openconnect
@@ -40,7 +24,10 @@ curl -fsSL https://github.com/MD2SA/gp-arch/releases/latest/download/gp-tui-x86_
 gp-tui
 ```
 
-Or build it from source:
+On first launch, enter your VPN portal. Press `c`, finish SSO/MFA in the browser,
+and enter your sudo password in the TUI prompt. Press `d` to disconnect.
+
+To build from source instead of downloading the binary:
 
 ```bash
 sudo pacman -S --needed git rust globalprotect-openconnect
@@ -50,140 +37,46 @@ cd gp-arch
 gp-tui
 ```
 
-`install.sh` builds the release binary once and copies it to `~/.local/bin`.
-After that, run `gp-tui` directly; Rust is only needed to build it. Make sure
-`~/.local/bin` is in your `PATH`.
+## Optional: official GlobalProtect CLI
 
-On first start, enter your portal in the TUI. Press `c` to connect; the browser
-opens for SSO/MFA, then the TUI asks for your sudo password in a masked prompt.
-
-Closing the terminal sends `SIGHUP`; the TUI then tries
-`sudo -n gpclient disconnect` before exiting. If the sudo timestamp has already
-expired, that cleanup cannot prompt and the tunnel may stay up; run
-`sudo gpclient disconnect` in that case.
-
-### Official CLI (requires the vendor tarball)
-
-Download `PanGPLinux-*.tgz` from your organisation's VPN page, then:
+If your organisation provides the vendor tarball, the Arch-specific installer is
+in [`installers/arch/`](installers/arch/). It does not redistribute vendor
+binaries:
 
 ```bash
-cd gp-arch
-chmod +x installers/arch/gp_install_arch.sh
 sudo ./installers/arch/gp_install_arch.sh ~/Downloads/PanGPLinux-*.tgz
-
 ./install.sh
 gp-tui
 ```
 
-To inspect the staged files without changing the system:
+NetworkManager is optional. When installed, the script configures it to leave
+GlobalProtect's `gpd0` tunnel interface alone. See
+[`installers/arch/README.md`](installers/arch/README.md) for staging and
+uninstall instructions.
 
-```bash
-./installers/arch/gp_install_arch.sh --stage /tmp/gp-stage ~/Downloads/PanGPLinux-*.tgz
-```
+## Safety and support
 
-## What the TUI does
+- Arch Linux, x86_64 and systemd are the supported platform. A graphical browser
+  session is required for SSO/MFA.
+- The TUI does not change routes, DNS or tunnel interfaces itself.
+- For the free backend, closing the terminal triggers a best-effort disconnect.
+  If the sudo timestamp has expired, run `sudo gpclient disconnect` manually.
+- This is an unofficial project, not endorsed by Palo Alto Networks.
 
-`gp-tui` auto-detects an installed backend:
+See [`docs/tui.md`](docs/tui.md) for configuration and the keymap, and
+[`docs/TESTING.md`](docs/TESTING.md) for test commands and manual validation.
 
-| Backend | How it connects | Needs vendor tarball |
-|---|---|---|
-| Official CLI | `globalprotect` + `gpd`/`gpa` services | Yes |
-| Free backend | `gpauth` + `sudo gpclient` | No |
-
-Use `b` to cycle the preferred backend (`auto`, `official`, `gpclient`).
-Credentials and MFA stay in the browser; the TUI only displays status and
-controls the local client. For the free backend, the sudo password is requested
-in a masked in-app prompt, so the TUI stays on screen.
-
-The TUI has three pages:
-
-- **Status** — state, portal, connection details and the next action.
-- **Profiles** — saved VPN configurations and per-profile settings.
-- **Logs** — followed or paused client logs, search, wrapping and diagnostics.
-
-The supported terminal minimum is **60×16**; 80×24 or larger is recommended.
-`GP_TUI_ASCII=1` and `NO_COLOR=1` are supported.
-
-See [`docs/tui.md`](docs/tui.md) for the full keymap, configuration and backend
-details.
-
-## Requirements and scope
-
-Supported:
-
-- Arch Linux or an Arch-based distribution.
-- x86_64.
-- systemd.
-- A graphical desktop session with a browser for SAML/SSO/MFA.
-- Rust/Cargo to build the TUI.
-- `/dev/net/tun`.
-- NetworkManager is recommended, but not required, for the official backend. If
-  NetworkManager is installed, the installer configures `gpd0` so it leaves the
-  tunnel alone.
-
-Not supported:
-
-- Windows, macOS or non-systemd Linux.
-- ARM, unless the guard and vendor package layout are tested.
-- Headless/SSH-only sessions.
-- The official GUI. It requires Qt5 WebEngine, which is not available in the
-  current Arch repositories.
-
-Other Linux distributions are best-effort only. This repository targets Arch
-first.
-
-## Testing
-
-Build and test the TUI from the repository root:
+## Development
 
 ```bash
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 cargo build --release
-```
-
-Run the installer regression suite:
-
-```bash
-bash -n installers/arch/gp_install_arch.sh
-bash -n installers/arch/tests/test_installer.sh
 bash installers/arch/tests/test_installer.sh
 ```
 
-Live VPN connections, real install/uninstall and suspend/resume behaviour are
-manual tests because they need a real portal, credentials, root access and a
-desktop session. See [`docs/TESTING.md`](docs/TESTING.md) for the checklist and
-current validation state.
-
-## Safety
-
-- The TUI does not modify routes, DNS or tunnel interfaces itself.
-- No passwords, cookies or tokens are stored in this repository or on disk by
-  the TUI. The sudo password is held in memory only while sudo validates it.
-- The installer never redistributes Palo Alto Networks binaries. It installs the
-  tarball that the user downloaded from their organisation.
-- Quitting while a tunnel or operation is active asks for confirmation.
-
-## Uninstall
-
-Remove the TUI installed by `install.sh`:
-
-```bash
-rm -f ~/.local/bin/gp-tui
-```
-
-Remove the official CLI and its services:
-
-```bash
-sudo ./installers/arch/gp_install_arch.sh --uninstall
-```
-
-Add `--purge` only if you also want to remove the invoking user's
-`~/.GlobalProtect` state.
-
 ## License
 
-MIT for this repository. The GlobalProtect client is proprietary software by
-Palo Alto Networks and is distributed under its own terms. This project is
-unofficial and is not endorsed by Palo Alto Networks or any organisation.
+MIT for this repository. The GlobalProtect client remains proprietary and is
+provided under its own terms.

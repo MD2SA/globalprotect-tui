@@ -57,7 +57,7 @@ These checks need a real Arch desktop and a real portal. They are not run in CI.
 
 ### Official backend
 
-- [ ] Install the vendor CLI with `gp_install_arch.sh`.
+- [ ] Install the vendor CLI with `installers/arch/gp_install_arch.sh`.
 - [ ] Connect through the browser/SSO flow.
 - [ ] Confirm `globalprotect show --status` and `show --details`.
 - [ ] Disconnect and confirm `gpd0` and routes are gone.
@@ -71,7 +71,7 @@ These checks need a real Arch desktop and a real portal. They are not run in CI.
 - [ ] Confirm failed connections keep their error visible while status polls.
 - [ ] Stop `gpd.service` with the VPN idle and connected; confirm it stops
   without `Result=timeout` or SIGKILL.
-- [ ] Run `gp_install_arch.sh --uninstall` and check for leftover services,
+- [ ] Run `installers/arch/gp_install_arch.sh --uninstall` and check for leftover services,
   routes, DNS entries, `gpd0` or processes.
 - [ ] Suspend and resume with an active tunnel.
 - [ ] Switch between Wi-Fi and Ethernet and verify reconnection.
