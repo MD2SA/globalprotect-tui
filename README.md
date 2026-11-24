@@ -21,6 +21,15 @@ sudo pacman -S --needed globalprotect-openconnect
 mkdir -p ~/.local/bin
 curl -fsSL https://github.com/MD2SA/gp-arch/releases/latest/download/gp-tui-x86_64-linux.tar.gz |
     tar -xz -C ~/.local/bin
+~/.local/bin/gp-tui
+```
+
+`~/.local/bin` installs only for your account and usually needs no `sudo`. To
+make `gp-tui` available to all users instead, install the extracted binary to
+`/usr/local/bin`:
+
+```bash
+sudo install -Dm755 ~/.local/bin/gp-tui /usr/local/bin/gp-tui
 gp-tui
 ```
 
@@ -34,8 +43,10 @@ sudo pacman -S --needed git rust globalprotect-openconnect
 git clone https://github.com/MD2SA/gp-arch.git
 cd gp-arch
 ./install.sh
-gp-tui
+~/.local/bin/gp-tui
 ```
+
+Use `sudo ./install.sh --system` to install to `/usr/local/bin` instead.
 
 ## Optional: official GlobalProtect CLI
 
@@ -46,7 +57,7 @@ binaries:
 ```bash
 sudo ./installers/arch/gp_install_arch.sh ~/Downloads/PanGPLinux-*.tgz
 ./install.sh
-gp-tui
+~/.local/bin/gp-tui
 ```
 
 NetworkManager is optional. When installed, the script configures it to leave

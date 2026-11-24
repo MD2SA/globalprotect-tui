@@ -31,13 +31,18 @@ Prebuilt binary for x86_64 Linux (no Rust needed):
 mkdir -p ~/.local/bin
 curl -fsSL https://github.com/MD2SA/gp-arch/releases/latest/download/gp-tui-x86_64-linux.tar.gz |
     tar -xz -C ~/.local/bin
-gp-tui
+~/.local/bin/gp-tui
 ```
+
+`~/.local/bin` is a per-user install location. If it is not on your `PATH`,
+run the binary by its full path as above or add it to your shell's `PATH`. For a
+system-wide install, use `/usr/local/bin`.
 
 From the repository root:
 
 ```bash
 ./install.sh          # ~/.local/bin/gp-tui
+~/.local/bin/gp-tui
 # or
 ./install.sh --system # /usr/local/bin/gp-tui
 gp-tui
