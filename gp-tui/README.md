@@ -24,6 +24,15 @@ Also required:
 
 ## Build and install
 
+Prebuilt binary for x86_64 Linux (no Rust needed):
+
+```bash
+mkdir -p ~/.local/bin
+curl -fsSL https://github.com/MD2SA/gp-arch/releases/latest/download/gp-tui-x86_64-linux.tar.gz |
+    tar -xz -C ~/.local/bin
+gp-tui
+```
+
 From this directory:
 
 ```bash

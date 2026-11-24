@@ -6,7 +6,9 @@ use ratatui::DefaultTerminal;
 use std::collections::VecDeque;
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -316,10 +318,14 @@ impl App {
         app
     }
 
-    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+    pub fn run(&mut self, terminal: &mut DefaultTerminal, shutdown: Arc<AtomicBool>) -> Result<()> {
         let mut last_poll = Instant::now() - Duration::from_secs(60);
 
         loop {
+            if shutdown.load(Ordering::Relaxed) {
+                self.shutdown_from_signal();
+                break;
+            }
             self.reap_gpclient();
             self.clear_notice();
             self.check_auth_timeout();
@@ -1101,6 +1107,26 @@ impl App {
             if self.log_from_bottom == 0 {
                 self.log_follow = true;
             }
+        }
+    }
+
+    /// Best-effort cleanup when the terminal is closed or the process is
+    /// signalled. There is no terminal left to prompt on, so only a cached
+    /// sudo timestamp can disconnect a gpclient tunnel started by this TUI.
+    fn shutdown_from_signal(&mut self) {
+        if self.auth_pid.is_some() || self.state == VpnState::WaitingBrowser {
+            self.cancel_auth(false);
+        }
+
+        match self.backend {
+            Backend::Gpclient if self.gpclient_child.is_some() => {
+                let _ = client::gpclient_disconnect();
+                self.gpclient_child = None;
+            }
+            Backend::Official if self.state.is_active() => {
+                let _ = client::disconnect();
+            }
+            _ => {}
         }
     }
 

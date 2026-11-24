@@ -65,6 +65,9 @@ These checks need a real Arch desktop and a real portal. They are not run in CI.
 ### Lifecycle and system integration
 
 - [ ] Install the TUI and connect/disconnect from a clean shell.
+- [ ] Close the terminal window while connected; confirm the TUI exits cleanly
+  and `gpclient` is disconnected when the sudo timestamp is still valid.
+- [ ] Send `SIGTERM` while connected and confirm the same cleanup happens.
 - [ ] Confirm failed connections keep their error visible while status polls.
 - [ ] Stop `gpd.service` with the VPN idle and connected; confirm it stops
   without `Result=timeout` or SIGKILL.

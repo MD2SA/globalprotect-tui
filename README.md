@@ -21,7 +21,18 @@ SAML/SSO/MFA stays in the system browser.
 
 ### Free backend (no vendor tarball)
 
-Requires an Arch desktop session and `sudo` access for the tunnel.
+Requires an Arch desktop session and `sudo` access for the tunnel. Install the
+TUI from a release binary (no Rust needed):
+
+```bash
+sudo pacman -S --needed globalprotect-openconnect
+mkdir -p ~/.local/bin
+curl -fsSL https://github.com/MD2SA/gp-arch/releases/latest/download/gp-tui-x86_64-linux.tar.gz |
+    tar -xz -C ~/.local/bin
+gp-tui
+```
+
+Or build it from source:
 
 ```bash
 sudo pacman -S --needed git rust globalprotect-openconnect
@@ -37,6 +48,11 @@ After that, run `gp-tui` directly; Rust is only needed to build it. Make sure
 
 On first start, enter your portal in the TUI. Press `c` to connect; the browser
 opens for SSO/MFA, then the TUI asks for your sudo password in a masked prompt.
+
+Closing the terminal sends `SIGHUP`; the TUI then tries
+`sudo -n gpclient disconnect` before exiting. If the sudo timestamp has already
+expired, that cleanup cannot prompt and the tunnel may stay up; run
+`sudo gpclient disconnect` in that case.
 
 ### Official CLI (requires the vendor tarball)
 

@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  gp-tui-linux-x86_64:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: gp-tui
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gp-tui
+      - name: Build
+        run: cargo build --release --locked
+      - name: Package
+        run: |
+          mkdir -p dist
+          install -m755 target/release/gp-tui dist/gp-tui
+          tar -C dist -czf gp-tui-x86_64-linux.tar.gz gp-tui
+          sha256sum gp-tui-x86_64-linux.tar.gz > gp-tui-x86_64-linux.tar.gz.sha256
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" \
+              gp-tui-x86_64-linux.tar.gz \
+              gp-tui-x86_64-linux.tar.gz.sha256 \
+              --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              gp-tui-x86_64-linux.tar.gz \
+              gp-tui-x86_64-linux.tar.gz.sha256 \
+              --title "gp-tui $GITHUB_REF_NAME" \
+              --generate-notes
+          fi

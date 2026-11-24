@@ -7,6 +7,9 @@ use anyhow::Result;
 use app::{App, VpnState};
 use client::BackendPreference;
 use config::Config;
+use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 fn print_help() {
     println!(
@@ -58,8 +61,14 @@ fn main() -> Result<()> {
     }
 
     let config = Config::load();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    for signal in [SIGHUP, SIGINT, SIGTERM] {
+        signal_hook::flag::register(signal, Arc::clone(&shutdown))
+            .map_err(|error| anyhow::anyhow!("cannot install signal handler: {error}"))?;
+    }
+
     let mut terminal = ratatui::init();
-    let result = App::new(config).run(&mut terminal);
+    let result = App::new(config).run(&mut terminal, shutdown);
     ratatui::restore();
     result
 }
