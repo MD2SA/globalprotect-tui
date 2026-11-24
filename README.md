@@ -64,7 +64,8 @@ To inspect the staged files without changing the system:
 
 Use `b` to cycle the preferred backend (`auto`, `official`, `gpclient`).
 Credentials and MFA stay in the browser; the TUI only displays status and
-controls the local client.
+controls the local client. For the free backend, the sudo password is requested
+in a masked in-app prompt, so the TUI stays on screen.
 
 The TUI has three pages:
 
@@ -130,7 +131,8 @@ current validation state.
 ## Safety
 
 - The TUI does not modify routes, DNS or tunnel interfaces itself.
-- No passwords, cookies or tokens are stored in this repository or in the TUI.
+- No passwords, cookies or tokens are stored in this repository or on disk by
+  the TUI. The sudo password is held in memory only while sudo validates it.
 - The installer never redistributes Palo Alto Networks binaries. It installs the
   tarball that the user downloaded from their organisation.
 - Quitting while a tunnel or operation is active asks for confirmation.

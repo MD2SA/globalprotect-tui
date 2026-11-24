@@ -16,6 +16,8 @@ pub enum Msg {
     Snapshot(Snapshot),
     AuthPid(u64, u32),
     GpclientAuth(u64, Result<client::AuthResult, String>),
+    GpclientDisconnected(Result<(), String>),
+    SudoAuth(u64, Result<(), String>),
     ConnectDone(Result<Vec<String>, String>),
     DisconnectDone(Result<Vec<String>, String>),
     GpaStarted(Result<(), String>),
@@ -155,6 +157,55 @@ pub enum Mode {
     Search,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SudoAction {
+    Connect,
+    Disconnect,
+    Quit,
+}
+
+/// Password prompt shown inside the TUI. The password is kept as bytes so it
+/// can be overwritten before release; it is never written to disk or logs.
+pub struct SudoPrompt {
+    pub action: SudoAction,
+    pub password: Vec<u8>,
+    pub error: Option<String>,
+    pub inflight: bool,
+}
+
+impl SudoPrompt {
+    pub(crate) fn new(action: SudoAction) -> Self {
+        Self {
+            action,
+            password: Vec::new(),
+            error: None,
+            inflight: false,
+        }
+    }
+
+    pub fn push_char(&mut self, character: char) {
+        let mut buffer = [0u8; 4];
+        self.password
+            .extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
+    }
+
+    pub fn pop_char(&mut self) {
+        if let Ok(text) = std::str::from_utf8(&self.password) {
+            if let Some((index, _)) = text.char_indices().next_back() {
+                self.password.truncate(index);
+            }
+        } else if !self.password.is_empty() {
+            self.password.pop();
+        }
+    }
+}
+
+impl Drop for SudoPrompt {
+    fn drop(&mut self) {
+        self.password.fill(0);
+    }
+}
+
 pub struct App {
     pub cfg: Config,
     pub preference: BackendPreference,
@@ -178,6 +229,8 @@ pub struct App {
     pub log_from_bottom: usize,
     pub help: bool,
     pub quit_modal: bool,
+    pub sudo_prompt: Option<SudoPrompt>,
+    pub should_quit: bool,
     pub ssl_only: Option<bool>,
     pub ssl_only_inflight: bool,
     pub input: String,
@@ -186,6 +239,7 @@ pub struct App {
     gpclient_child: Option<std::process::Child>,
     pending_cookie: Option<String>,
     auth_epoch: u64,
+    sudo_epoch: u64,
     pub auth_pid: Option<u32>,
     auth_started: Option<Instant>,
     notice: Option<(String, Instant)>,
@@ -226,6 +280,8 @@ impl App {
             log_from_bottom: 0,
             help: false,
             quit_modal: false,
+            sudo_prompt: None,
+            should_quit: false,
             ssl_only: None,
             ssl_only_inflight: false,
             input: String::new(),
@@ -234,6 +290,7 @@ impl App {
             gpclient_child: None,
             pending_cookie: None,
             auth_epoch: 0,
+            sudo_epoch: 0,
             auth_pid: None,
             auth_started: None,
             notice: None,
@@ -272,12 +329,16 @@ impl App {
             }
 
             if let Some(cookie) = self.pending_cookie.take() {
-                self.finish_gpclient_connect(terminal, cookie);
+                self.finish_gpclient_connect(cookie);
+            }
+
+            if self.should_quit {
+                break;
             }
 
             if event::poll(Duration::from_millis(200))? {
                 if let Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press && self.handle_key(key, terminal) {
+                    if key.kind == KeyEventKind::Press && self.handle_key(key) {
                         break;
                     }
                 }
@@ -484,20 +545,26 @@ impl App {
         });
     }
 
-    fn finish_gpclient_connect(&mut self, terminal: &mut DefaultTerminal, cookie: String) {
+    fn finish_gpclient_connect(&mut self, cookie: String) {
         self.push_log("SSO done; starting gpclient".to_string());
 
-        let result = if client::sudo_ready() {
-            client::gpclient_start(&cookie, self.cfg.portal(), self.cfg.username(), false)
-        } else {
-            self.push_log("sudo authentication required".to_string());
-            ratatui::restore();
-            let result =
-                client::gpclient_start(&cookie, self.cfg.portal(), self.cfg.username(), true);
-            *terminal = ratatui::init();
-            let _ = terminal.clear();
-            result
-        };
+        if client::sudo_ready(client::SudoOp::Connect) {
+            self.start_gpclient(cookie);
+            return;
+        }
+
+        self.state = VpnState::WaitingSudo;
+        self.pending_cookie = Some(cookie);
+        self.push_log("sudo needs a password; enter it in the prompt".to_string());
+        self.open_sudo_prompt(SudoAction::Connect);
+    }
+
+    fn start_gpclient(&mut self, cookie: String) {
+        self.push_log(format!(
+            "> sudo -n gpclient connect {}",
+            self.cfg.portal().trim()
+        ));
+        let result = client::gpclient_start(&cookie, self.cfg.portal(), self.cfg.username());
 
         self.busy = false;
         match result {
@@ -520,36 +587,136 @@ impl App {
         self.spawn_refresh();
     }
 
-    fn gpclient_disconnect(&mut self, terminal: &mut DefaultTerminal) {
+    fn gpclient_disconnect(&mut self) {
         if self.busy {
             self.push_log("already connecting or disconnecting".to_string());
             return;
         }
 
+        if !client::sudo_ready(client::SudoOp::Disconnect) {
+            self.busy = true;
+            self.error = None;
+            self.state = VpnState::WaitingSudo;
+            self.push_log("sudo needs a password; enter it in the prompt".to_string());
+            self.open_sudo_prompt(SudoAction::Disconnect);
+            return;
+        }
+
+        self.begin_gpclient_disconnect();
+    }
+
+    fn begin_gpclient_disconnect(&mut self) {
         self.busy = true;
         self.error = None;
         self.state = VpnState::Disconnecting;
-        self.push_log("> sudo gpclient disconnect".to_string());
+        self.push_log("> sudo -n gpclient disconnect".to_string());
 
-        ratatui::restore();
-        let result = client::gpclient_disconnect();
-        *terminal = ratatui::init();
-        let _ = terminal.clear();
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let result = client::gpclient_disconnect();
+            let _ = tx.send(Msg::GpclientDisconnected(result));
+        });
+    }
 
-        self.busy = false;
-        match result {
-            Ok(()) => {
-                self.push_log("gpclient: disconnected".to_string());
-                self.state = VpnState::Disconnected;
-                self.set_notice("Disconnected");
+    fn open_sudo_prompt(&mut self, action: SudoAction) {
+        self.sudo_prompt = Some(SudoPrompt::new(action));
+    }
+
+    fn handle_sudo_key(&mut self, key: KeyEvent) -> bool {
+        if self.sudo_prompt.is_none() {
+            return false;
+        }
+        if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
+            self.cancel_sudo_prompt();
+            return false;
+        }
+        match key.code {
+            KeyCode::Enter => self.submit_sudo(),
+            KeyCode::Esc => self.cancel_sudo_prompt(),
+            KeyCode::Backspace => {
+                if let Some(prompt) = self.sudo_prompt.as_mut() {
+                    prompt.pop_char();
+                }
             }
-            Err(error) => {
-                self.push_log(format!("gpclient disconnect failed: {error}"));
-                self.error = Some(error);
-                self.state = VpnState::Error;
+            KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(prompt) = self.sudo_prompt.as_mut() {
+                    prompt.push_char(character);
+                }
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn submit_sudo(&mut self) {
+        let Some(prompt) = self.sudo_prompt.as_mut() else {
+            return;
+        };
+        if prompt.inflight {
+            return;
+        }
+        if prompt.password.is_empty() {
+            prompt.error = Some("password cannot be empty".to_string());
+            return;
+        }
+
+        prompt.inflight = true;
+        prompt.error = None;
+        self.sudo_epoch = self.sudo_epoch.wrapping_add(1);
+        let epoch = self.sudo_epoch;
+        let mut password = std::mem::take(&mut prompt.password);
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let result = client::sudo_authenticate(&password);
+            password.fill(0);
+            let _ = tx.send(Msg::SudoAuth(epoch, result));
+        });
+    }
+
+    fn cancel_sudo_prompt(&mut self) {
+        let Some(prompt) = self.sudo_prompt.take() else {
+            return;
+        };
+        self.sudo_epoch = self.sudo_epoch.wrapping_add(1);
+        self.busy = false;
+        self.pending_cookie = None;
+        self.state = match prompt.action {
+            SudoAction::Connect => VpnState::Disconnected,
+            SudoAction::Disconnect | SudoAction::Quit => VpnState::Connected,
+        };
+        self.push_log("sudo authentication cancelled".to_string());
+        self.set_notice("Sudo cancelled");
+    }
+
+    fn sudo_authenticated(&mut self) {
+        let Some(prompt) = self.sudo_prompt.take() else {
+            return;
+        };
+        self.push_log("sudo authenticated".to_string());
+
+        match prompt.action {
+            SudoAction::Connect => {
+                if let Some(cookie) = self.pending_cookie.take() {
+                    self.start_gpclient(cookie);
+                } else {
+                    self.busy = false;
+                    self.state = VpnState::Disconnected;
+                    self.push_log("authentication cookie expired; reconnect".to_string());
+                    self.set_notice("Authentication expired");
+                }
+            }
+            SudoAction::Disconnect => self.begin_gpclient_disconnect(),
+            SudoAction::Quit => {
+                if self.gpclient_child.is_some() || self.state.is_active() {
+                    let result = client::gpclient_disconnect();
+                    if let Err(error) = result {
+                        self.push_log(format!("disconnect before quit failed: {error}"));
+                    }
+                }
+                self.busy = false;
+                self.should_quit = true;
             }
         }
-        self.spawn_refresh();
     }
 
     fn spawn_start_gpa(&mut self) {
@@ -669,7 +836,11 @@ impl App {
         self.mode = Mode::Normal;
     }
 
-    fn handle_key(&mut self, key: KeyEvent, terminal: &mut DefaultTerminal) -> bool {
+    fn handle_key(&mut self, key: KeyEvent) -> bool {
+        if self.sudo_prompt.is_some() {
+            return self.handle_sudo_key(key);
+        }
+
         if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
             return self.request_quit();
         }
@@ -682,7 +853,7 @@ impl App {
         }
 
         if self.quit_modal {
-            return self.handle_quit_modal(key, terminal);
+            return self.handle_quit_modal(key);
         }
 
         if self.profile_delete.is_some() {
@@ -815,7 +986,7 @@ impl App {
                 ),
             },
             KeyCode::Char('d') => match self.backend {
-                Backend::Gpclient => self.gpclient_disconnect(terminal),
+                Backend::Gpclient => self.gpclient_disconnect(),
                 Backend::Official => self.spawn_disconnect(),
                 Backend::None => self.push_log(
                     "no backend installed: install globalprotect or globalprotect-openconnect"
@@ -937,12 +1108,12 @@ impl App {
         true
     }
 
-    fn handle_quit_modal(&mut self, key: KeyEvent, terminal: &mut DefaultTerminal) -> bool {
+    fn handle_quit_modal(&mut self, key: KeyEvent) -> bool {
         match key.code {
             KeyCode::Char('d') => {
                 self.quit_modal = false;
-                self.quit_and_disconnect(terminal);
-                true
+                self.quit_and_disconnect();
+                self.should_quit
             }
             KeyCode::Char('q') => true,
             KeyCode::Esc => {
@@ -953,17 +1124,24 @@ impl App {
         }
     }
 
-    fn quit_and_disconnect(&mut self, terminal: &mut DefaultTerminal) {
+    fn quit_and_disconnect(&mut self) {
         match self.backend {
             Backend::Gpclient => {
                 if self.gpclient_child.is_some() || self.state.is_active() {
-                    ratatui::restore();
-                    let result = client::gpclient_disconnect();
-                    *terminal = ratatui::init();
-                    let _ = terminal.clear();
-                    if let Err(error) = result {
-                        self.push_log(format!("disconnect before quit failed: {error}"));
+                    if client::sudo_ready(client::SudoOp::Disconnect) {
+                        if let Err(error) = client::gpclient_disconnect() {
+                            self.push_log(format!("disconnect before quit failed: {error}"));
+                        }
+                        self.should_quit = true;
+                    } else {
+                        self.busy = true;
+                        self.error = None;
+                        self.state = VpnState::WaitingSudo;
+                        self.push_log("sudo needs a password; enter it in the prompt".to_string());
+                        self.open_sudo_prompt(SudoAction::Quit);
                     }
+                } else {
+                    self.should_quit = true;
                 }
             }
             Backend::Official => {
@@ -972,8 +1150,9 @@ impl App {
                         self.push_log(format!("disconnect before quit failed: {error}"));
                     }
                 }
+                self.should_quit = true;
             }
-            Backend::None => {}
+            Backend::None => self.should_quit = true,
         }
     }
 
@@ -1319,7 +1498,7 @@ impl App {
                         for line in auth.logs {
                             self.push_log(line);
                         }
-                        self.push_log("SSO complete; waiting for sudo".to_string());
+                        self.push_log("SSO complete".to_string());
                         self.state = VpnState::WaitingSudo;
                         self.pending_cookie = Some(auth.cookie);
                     }
@@ -1330,6 +1509,45 @@ impl App {
                         self.state = VpnState::Error;
                     }
                 }
+            }
+            Msg::SudoAuth(epoch, result) => {
+                if epoch != self.sudo_epoch {
+                    return;
+                }
+                match result {
+                    Ok(()) => self.sudo_authenticated(),
+                    Err(error) => {
+                        if let Some(prompt) = self.sudo_prompt.as_mut() {
+                            prompt.inflight = false;
+                            prompt.error = Some(error.clone());
+                        }
+                        self.push_log(format!("sudo authentication failed: {error}"));
+                    }
+                }
+            }
+            Msg::GpclientDisconnected(result) => {
+                self.busy = false;
+                match result {
+                    Ok(()) => {
+                        self.push_log("gpclient: disconnected".to_string());
+                        self.state = VpnState::Disconnected;
+                        self.set_notice("Disconnected");
+                    }
+                    Err(error) if client::sudo_needs_password(&error) => {
+                        self.busy = true;
+                        self.state = VpnState::WaitingSudo;
+                        self.push_log(
+                            "sudo credentials expired; enter the password again".to_string(),
+                        );
+                        self.open_sudo_prompt(SudoAction::Disconnect);
+                    }
+                    Err(error) => {
+                        self.push_log(format!("gpclient disconnect failed: {error}"));
+                        self.error = Some(error);
+                        self.state = VpnState::Error;
+                    }
+                }
+                self.spawn_refresh();
             }
             Msg::ConnectDone(result) => {
                 self.busy = false;
@@ -1498,5 +1716,70 @@ mod tests {
             normalize_portal("vpn.example.com:443"),
             "vpn.example.com:443"
         );
+    }
+
+    fn test_app() -> App {
+        let mut config = Config::default();
+        config
+            .add_profile("default".to_string(), "vpn.example.com".to_string())
+            .unwrap();
+        let mut app = App::new(config);
+        app.backend = Backend::Gpclient;
+        app
+    }
+
+    #[test]
+    fn sudo_prompt_edits_a_masked_password() {
+        let mut app = test_app();
+        app.open_sudo_prompt(SudoAction::Connect);
+
+        for character in "pä".chars() {
+            app.handle_sudo_key(KeyEvent::from(KeyCode::Char(character)));
+        }
+        app.handle_sudo_key(KeyEvent::from(KeyCode::Backspace));
+
+        let prompt = app.sudo_prompt.as_ref().unwrap();
+        assert_eq!(prompt.password, b"p");
+        assert!(prompt.error.is_none());
+    }
+
+    #[test]
+    fn empty_sudo_password_is_rejected_inline() {
+        let mut app = test_app();
+        app.open_sudo_prompt(SudoAction::Connect);
+        app.submit_sudo();
+
+        let prompt = app.sudo_prompt.as_ref().unwrap();
+        assert_eq!(prompt.error.as_deref(), Some("password cannot be empty"));
+        assert!(!prompt.inflight);
+    }
+
+    #[test]
+    fn cancelling_connect_prompt_drops_the_cookie_and_resets_state() {
+        let mut app = test_app();
+        app.state = VpnState::WaitingSudo;
+        app.busy = true;
+        app.pending_cookie = Some("cookie".to_string());
+        app.open_sudo_prompt(SudoAction::Connect);
+
+        app.handle_sudo_key(KeyEvent::from(KeyCode::Esc));
+
+        assert!(app.sudo_prompt.is_none());
+        assert!(app.pending_cookie.is_none());
+        assert_eq!(app.state, VpnState::Disconnected);
+        assert!(!app.busy);
+    }
+
+    #[test]
+    fn cancelling_disconnect_prompt_keeps_the_tunnel_state() {
+        let mut app = test_app();
+        app.state = VpnState::WaitingSudo;
+        app.busy = true;
+        app.open_sudo_prompt(SudoAction::Disconnect);
+
+        app.handle_sudo_key(KeyEvent::from(KeyCode::Esc));
+
+        assert_eq!(app.state, VpnState::Connected);
+        assert!(!app.busy);
     }
 }

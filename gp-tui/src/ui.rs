@@ -1,4 +1,4 @@
-use crate::app::{App, Field, Mode, Page, VpnState};
+use crate::app::{App, Field, Mode, Page, SudoAction, VpnState};
 use crate::client::{detect_backend, Backend, BackendPreference};
 use crate::config::Profile;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
@@ -41,6 +41,14 @@ fn cursor() -> &'static str {
         "|"
     } else {
         "█"
+    }
+}
+
+fn spinner(app: &App) -> &'static str {
+    if ascii_mode() {
+        SPINNER_ASCII[(app.tick as usize / 2) % SPINNER_ASCII.len()]
+    } else {
+        SPINNER[(app.tick as usize / 2) % SPINNER.len()]
     }
 }
 
@@ -94,6 +102,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
     if app.profile_delete.is_some() {
         draw_profile_delete_modal(frame, app);
+    }
+    if app.sudo_prompt.is_some() {
+        draw_sudo_modal(frame, app);
     }
 }
 
@@ -1108,6 +1119,85 @@ fn draw_profile_delete_modal(frame: &mut Frame, app: &App) {
     );
 }
 
+fn draw_sudo_modal(frame: &mut Frame, app: &App) {
+    let Some(prompt) = &app.sudo_prompt else {
+        return;
+    };
+    let area = centered_size(frame.area(), 64, 10);
+    frame.render_widget(Clear, area);
+
+    let purpose = match prompt.action {
+        SudoAction::Connect => "Root is needed to create the VPN tunnel.",
+        SudoAction::Disconnect => "Root is needed to tear down the VPN tunnel.",
+        SudoAction::Quit => "Root is needed to disconnect before quitting.",
+    };
+    let user = std::env::var("USER").unwrap_or_else(|_| "you".to_string());
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            purpose,
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::raw(""),
+        if prompt.inflight {
+            Line::from(vec![
+                Span::raw(format!("Password for {user}: ")),
+                Span::styled(
+                    format!("{} checking...", spinner(app)),
+                    Style::default().fg(tint(Color::Yellow)),
+                ),
+            ])
+        } else {
+            Line::from(vec![
+                Span::raw(format!("Password for {user}: ")),
+                Span::styled(
+                    "*".repeat(prompt.password.len().min(44)),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(cursor(), Style::default().fg(tint(Color::Cyan))),
+            ])
+        },
+    ];
+
+    if let Some(error) = &prompt.error {
+        lines.push(Line::from(Span::styled(
+            error.clone(),
+            Style::default().fg(tint(Color::Red)),
+        )));
+    } else {
+        lines.push(Line::raw(""));
+    }
+
+    lines.push(Line::raw(""));
+    if prompt.inflight {
+        lines.push(Line::from("Waiting for sudo..."));
+    } else {
+        lines.push(Line::from("[Enter] Authenticate   [Esc] Cancel"));
+    }
+    lines.push(Line::from(Span::styled(
+        "Kept in memory only; never saved.",
+        Style::default().fg(tint(Color::Gray)),
+    )));
+
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .block(panel(" sudo authentication "))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn centered_size(area: Rect, width: u16, height: u16) -> Rect {
+    let width = width.min(area.width);
+    let height = height.min(area.height);
+    Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    }
+}
+
 fn centered(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
     let vertical = Layout::default()
         .direction(Direction::Vertical)
@@ -1224,7 +1314,7 @@ fn pad_to(value: String, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::App;
+    use crate::app::{App, SudoPrompt};
     use crate::config::Config;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -1477,5 +1567,29 @@ mod tests {
         );
         let text = render(&app, 60, 16);
         assert!(text.contains("[2] Profiles"));
+    }
+
+    #[test]
+    fn renders_sudo_modal_without_echoing_the_password() {
+        let mut app = status_app(VpnState::WaitingSudo);
+        let mut prompt = SudoPrompt::new(SudoAction::Connect);
+        prompt.password = b"hunter2".to_vec();
+        app.sudo_prompt = Some(prompt);
+
+        let text = render(&app, 80, 24);
+        assert!(text.contains("sudo authentication"));
+        assert!(text.contains("*******"));
+        assert!(!text.contains("hunter2"));
+        assert!(text.contains("[Enter] Authenticate"));
+    }
+
+    #[test]
+    fn sudo_modal_fits_minimum_terminal() {
+        let mut app = status_app(VpnState::WaitingSudo);
+        app.sudo_prompt = Some(SudoPrompt::new(SudoAction::Quit));
+        let text = render(&app, 60, 16);
+        assert!(text.contains("sudo authentication"));
+        assert!(text.contains("before quitting"));
+        assert!(text.contains("[Esc] Cancel"));
     }
 }

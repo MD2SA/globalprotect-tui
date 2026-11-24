@@ -381,10 +381,26 @@ pub fn gpclient_auth(portal: &str, on_start: impl FnOnce(u32)) -> Result<AuthRes
     Ok(AuthResult { cookie, logs })
 }
 
-/// True when sudo can run without prompting (cached timestamp or NOPASSWD).
-pub fn sudo_ready() -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SudoOp {
+    Connect,
+    Disconnect,
+}
+
+/// True when the matching `sudo -n gpclient` command can run without a prompt,
+/// either because sudo has a cached timestamp or because the user has a
+/// NOPASSWD rule for it.
+///
+/// Probing with `--help` avoids touching the tunnel and works with narrow
+/// sudoers rules such as `NOPASSWD: /usr/bin/gpclient connect *`.
+pub fn sudo_ready(op: SudoOp) -> bool {
+    let args: &[&str] = match op {
+        SudoOp::Connect => &["gpclient", "connect", "--help"],
+        SudoOp::Disconnect => &["gpclient", "disconnect", "--help"],
+    };
     Command::new("sudo")
-        .args(["-n", "true"])
+        .arg("-n")
+        .args(args)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -392,25 +408,55 @@ pub fn sudo_ready() -> bool {
         .unwrap_or(false)
 }
 
-/// Authenticates sudo once and starts `sudo gpclient connect` in the background
-/// with its output in a log file. The caller must restore the terminal before
-/// calling this when `authenticate_sudo` is true.
-pub fn gpclient_start(
-    cookie: &str,
-    portal: &str,
-    username: &str,
-    authenticate_sudo: bool,
-) -> Result<Child, String> {
-    if authenticate_sudo {
-        let sudo_status = Command::new("sudo")
-            .arg("-v")
-            .status()
-            .map_err(|error| format!("failed to run sudo: {error}"))?;
-        if !sudo_status.success() {
-            return Err("sudo authentication failed".to_string());
-        }
+/// Validates a sudo password without giving sudo a terminal.
+///
+/// `sudo -S` reads the password from stdin and `-p ""` suppresses the prompt,
+/// so nothing is written to the TUI's terminal. On success sudo's timestamp is
+/// refreshed, which lets the later `sudo -n` calls run without a prompt.
+pub fn sudo_authenticate(password: &[u8]) -> Result<(), String> {
+    let mut child = Command::new("sudo")
+        .args(["-S", "-p", "", "-v"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("failed to run sudo: {error}"))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(password)
+            .and_then(|_| stdin.write_all(b"\n"))
+            .map_err(|error| format!("failed to pass the password to sudo: {error}"))?;
     }
 
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("waiting for sudo: {error}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = clean_output(&String::from_utf8_lossy(&output.stderr));
+    let message = stderr.trim();
+    Err(if message.is_empty() {
+        "sudo authentication failed".to_string()
+    } else {
+        message.to_string()
+    })
+}
+
+/// True when sudo refused a command because its cached timestamp is gone.
+pub fn sudo_needs_password(message: &str) -> bool {
+    message
+        .to_ascii_lowercase()
+        .contains("password is required")
+}
+
+/// Starts `sudo -n gpclient connect` in the background with its output in a log
+/// file. Sudo credentials must already be cached (see [`sudo_authenticate`]).
+/// `-n` is important: it turns an expired timestamp into an error instead of a
+/// terminal password prompt that would corrupt the TUI.
+pub fn gpclient_start(cookie: &str, portal: &str, username: &str) -> Result<Child, String> {
     let log_path = gpclient_log_path().ok_or("cannot determine cache directory")?;
     if let Some(parent) = log_path.parent() {
         std::fs::create_dir_all(parent)
@@ -430,6 +476,7 @@ pub fn gpclient_start(
         .map_err(|error| format!("cloning log handle: {error}"))?;
 
     let mut command = Command::new("sudo");
+    command.arg("-n");
     command.args(gpclient_args(portal, username));
     command
         .stdin(Stdio::piped())
@@ -478,18 +525,25 @@ fn gpclient_args(portal: &str, username: &str) -> Vec<String> {
     args
 }
 
-/// Runs `sudo gpclient disconnect`. The caller must restore the terminal before
-/// calling this.
+/// Runs `sudo -n gpclient disconnect` and waits for it. `-n` prevents a
+/// terminal password prompt; callers must authenticate sudo first.
 pub fn gpclient_disconnect() -> Result<(), String> {
-    let status = Command::new("sudo")
-        .args(["gpclient", "disconnect"])
-        .status()
+    let output = Command::new("sudo")
+        .args(["-n", "gpclient", "disconnect"])
+        .stdin(Stdio::null())
+        .output()
         .map_err(|error| format!("failed to run sudo gpclient: {error}"))?;
 
-    if status.success() {
+    if output.status.success() {
         Ok(())
     } else {
-        Err(format!("sudo gpclient disconnect failed (exit {status})"))
+        let text = clean_output(&String::from_utf8_lossy(&output.stderr));
+        let message = text.trim();
+        Err(if message.is_empty() {
+            format!("sudo gpclient disconnect failed ({})", output.status)
+        } else {
+            message.to_string()
+        })
     }
 }
 
@@ -696,6 +750,16 @@ mod tests {
             BackendPreference::Gpclient
         );
         assert_eq!(BackendPreference::Gpclient.next(), BackendPreference::Auto);
+    }
+
+    #[test]
+    fn detects_expired_sudo_credentials() {
+        assert!(sudo_needs_password("sudo: a password is required"));
+        assert!(sudo_needs_password(
+            "sudo: a password is required\nsudo: no tty present"
+        ));
+        assert!(!sudo_needs_password("sudo: a terminal is required"));
+        assert!(!sudo_needs_password("connection refused"));
     }
 
     #[test]

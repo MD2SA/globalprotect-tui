@@ -66,13 +66,28 @@ When connecting:
 1. `gpauth <portal> --browser` runs as your user and opens the browser.
 2. Complete SSO/MFA. Press `Esc` in the TUI to cancel; authentication also
    times out after 180 seconds.
-3. If sudo is not cached, the TUI briefly hands the terminal back for the
-   password prompt.
-4. `sudo gpclient connect ... --cookie-on-stdin` runs in the background.
+3. If sudo is not cached, the TUI shows a masked password prompt without
+   leaving the alternate screen. `Esc` cancels the connection.
+4. `sudo -n gpclient connect ... --cookie-on-stdin` runs in the background.
 5. The TUI checks `/var/run/gpclient.lock` and the `tun*` interface for status.
 6. `gpclient` output is written to `~/.cache/gp-tui/gpclient.log`.
 
-Disconnect runs `sudo gpclient disconnect`.
+Disconnect runs `sudo -n gpclient disconnect`, using the same prompt when the
+sudo timestamp has expired. The password is only held in memory while sudo
+validates it; it is never written to the config or the log.
+
+To skip the prompt entirely, allow the user to run only `gpclient` without a
+password (replace `youruser`):
+
+```bash
+echo 'youruser ALL=(root) NOPASSWD: /usr/bin/gpclient connect *, /usr/bin/gpclient disconnect' |
+    sudo tee /etc/sudoers.d/gp-tui
+sudo chmod 440 /etc/sudoers.d/gp-tui
+sudo visudo -cf /etc/sudoers.d/gp-tui
+```
+
+This is optional. Without it, the TUI prompts for your password once per sudo
+timestamp (typically 15 minutes).
 
 ## Pages and keys
 
@@ -156,9 +171,10 @@ backend = "gpclient"
 
 The username is optional. The official backend passes it as `--username` to
 avoid a prompt, and the free backend passes it as `--user` to `gpclient`. With
-`gpauth` cookies it is usually unnecessary. Passwords and MFA are handled by the
-browser. Old single-profile configs are migrated automatically to a profile
-named `default`.
+`gpauth` cookies it is usually unnecessary. VPN passwords and MFA are handled by
+the browser; the sudo password is only passed to `sudo -v` from memory and is
+never persisted. Old single-profile configs are migrated automatically to a
+profile named `default`.
 
 ## Testing and status
 
