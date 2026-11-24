@@ -1,3 +1,5 @@
+//! Application state, event handling and backend actions.
+
 use crate::client::{self, Backend, BackendPreference, Details, Snapshot};
 use crate::config::Config;
 use anyhow::Result;
@@ -118,6 +120,12 @@ impl VpnState {
     }
 }
 
+/// Reconcile a polled snapshot with an operation that is still in progress.
+///
+/// A snapshot can lag behind a local action (the backend may still report
+/// Disconnected while `gpauth` runs, or Connected while a disconnect is
+/// stopping). Keep those local states, and keep an error visible until the
+/// user acts or a successful snapshot replaces it.
 fn reconcile_state(current: VpnState, snapshot: VpnState, gpclient_running: bool) -> VpnState {
     let next = match (current, snapshot) {
         (VpnState::WaitingBrowser, VpnState::Disconnected) => VpnState::WaitingBrowser,

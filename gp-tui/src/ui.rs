@@ -1,3 +1,5 @@
+//! Ratatui rendering for the status, profiles, settings and logs pages.
+
 use crate::app::{App, Field, Modal, Page, SudoAction, SudoPrompt, VpnState};
 use crate::client::{detect_backend, Backend, BackendPreference};
 use crate::config::Profile;
@@ -1139,7 +1141,12 @@ fn draw_sudo_modal(frame: &mut Frame, prompt: &SudoPrompt, tick: u64) {
             Line::from(vec![
                 Span::raw(format!("Password for {user}: ")),
                 Span::styled(
-                    "*".repeat(prompt.password.len().min(44)),
+                    "*".repeat(
+                        String::from_utf8_lossy(&prompt.password)
+                            .chars()
+                            .count()
+                            .min(44),
+                    ),
                     Style::default().add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(cursor(), Style::default().fg(tint(Color::Cyan))),

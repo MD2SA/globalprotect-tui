@@ -1,3 +1,5 @@
+//! Profiles and the on-disk config file.
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};

@@ -1,6 +1,8 @@
+//! Backend detection, command execution and status parsing.
+
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,10 +157,7 @@ fn official_snapshot() -> Snapshot {
 fn gpclient_snapshot() -> Snapshot {
     let lock = std::fs::read_to_string("/var/run/gpclient.lock").ok();
     let pid = lock.as_deref().and_then(lock_pid);
-    let pid_alive = pid
-        .map(|pid| Path::new(&format!("/proc/{pid}")).exists())
-        .unwrap_or(false);
-    let running = pid_alive || gpclient_running();
+    let running = pid.is_some_and(process_is_gpclient);
     let ip = tun_ip();
 
     let status = if running && ip.is_some() {
@@ -190,13 +189,9 @@ fn gpclient_snapshot() -> Snapshot {
     }
 }
 
-fn gpclient_running() -> bool {
-    Command::new("pgrep")
-        .args(["-x", "gpclient"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
+fn process_is_gpclient(pid: u32) -> bool {
+    std::fs::read_link(format!("/proc/{pid}/exe"))
+        .map(|path| path.to_string_lossy().contains("gpclient"))
         .unwrap_or(false)
 }
 
@@ -239,18 +234,20 @@ pub fn gpa_active() -> bool {
 }
 
 pub fn connect(portal: &str, username: &str) -> Result<Vec<String>, String> {
-    let mut command = Command::new("globalprotect");
+    const TIMEOUT_SECS: u64 = 300;
+    let mut command = limited("globalprotect", TIMEOUT_SECS);
     command.args(["connect", "--portal", portal.trim()]);
     if !username.trim().is_empty() {
         command.args(["--username", username.trim()]);
     }
     command.stdin(Stdio::null());
-    command.stdout(Stdio::piped());
-    command.stderr(Stdio::piped());
 
     let output = command
         .output()
         .map_err(|error| format!("failed to run globalprotect: {error}"))?;
+    if let Some(error) = timed_out(&output, "globalprotect connect", TIMEOUT_SECS) {
+        return Err(error);
+    }
     let text = combine_output(&output);
 
     if output.status.success() {
@@ -261,11 +258,15 @@ pub fn connect(portal: &str, username: &str) -> Result<Vec<String>, String> {
 }
 
 pub fn disconnect() -> Result<Vec<String>, String> {
-    let output = Command::new("globalprotect")
+    const TIMEOUT_SECS: u64 = 60;
+    let output = limited("globalprotect", TIMEOUT_SECS)
         .arg("disconnect")
         .stdin(Stdio::null())
         .output()
         .map_err(|error| format!("failed to run globalprotect: {error}"))?;
+    if let Some(error) = timed_out(&output, "globalprotect disconnect", TIMEOUT_SECS) {
+        return Err(error);
+    }
     let text = combine_output(&output);
 
     if output.status.success() {
@@ -402,7 +403,8 @@ pub fn sudo_connect_ready() -> bool {
 /// so nothing is written to the TUI's terminal. On success sudo's timestamp is
 /// refreshed, which lets the later `sudo -n` calls run without a prompt.
 pub fn sudo_authenticate(password: &[u8]) -> Result<(), String> {
-    let mut child = Command::new("sudo")
+    const TIMEOUT_SECS: u64 = 60;
+    let mut child = limited("sudo", TIMEOUT_SECS)
         .args(["-S", "-p", "", "-v"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -422,6 +424,9 @@ pub fn sudo_authenticate(password: &[u8]) -> Result<(), String> {
         .map_err(|error| format!("waiting for sudo: {error}"))?;
     if output.status.success() {
         return Ok(());
+    }
+    if let Some(error) = timed_out(&output, "sudo authentication", TIMEOUT_SECS) {
+        return Err(error);
     }
 
     let stderr = clean_output(&String::from_utf8_lossy(&output.stderr));
@@ -516,7 +521,8 @@ fn gpclient_args(portal: &str, username: &str) -> Vec<String> {
 /// Runs `sudo -n gpclient disconnect` and waits for it. `-n` prevents a
 /// terminal password prompt; callers must authenticate sudo first.
 pub fn gpclient_disconnect() -> Result<(), String> {
-    let output = Command::new("sudo")
+    const TIMEOUT_SECS: u64 = 30;
+    let output = limited("sudo", TIMEOUT_SECS)
         .args(["-n", "gpclient", "disconnect"])
         .stdin(Stdio::null())
         .output()
@@ -524,6 +530,8 @@ pub fn gpclient_disconnect() -> Result<(), String> {
 
     if output.status.success() {
         Ok(())
+    } else if let Some(error) = timed_out(&output, "gpclient disconnect", TIMEOUT_SECS) {
+        Err(error)
     } else {
         let text = clean_output(&String::from_utf8_lossy(&output.stderr));
         let message = text.trim();
@@ -536,11 +544,19 @@ pub fn gpclient_disconnect() -> Result<(), String> {
 }
 
 fn run(args: &[&str]) -> Result<String, String> {
-    let output = Command::new("globalprotect")
+    const TIMEOUT_SECS: u64 = 60;
+    let output = limited("globalprotect", TIMEOUT_SECS)
         .args(args)
         .stdin(Stdio::null())
         .output()
         .map_err(|error| format!("failed to run globalprotect: {error}"))?;
+    if let Some(error) = timed_out(
+        &output,
+        &format!("globalprotect {}", args.join(" ")),
+        TIMEOUT_SECS,
+    ) {
+        return Err(error);
+    }
     let text = combine_output(&output);
 
     if output.status.success() {
@@ -551,6 +567,16 @@ fn run(args: &[&str]) -> Result<String, String> {
             &format!("globalprotect {}", args.join(" ")),
         ))
     }
+}
+
+fn limited(program: &str, timeout_secs: u64) -> Command {
+    let mut command = Command::new("timeout");
+    command.arg(format!("{timeout_secs}s")).arg(program);
+    command
+}
+
+fn timed_out(output: &std::process::Output, action: &str, timeout_secs: u64) -> Option<String> {
+    (output.status.code() == Some(124)).then(|| format!("{action} timed out after {timeout_secs}s"))
 }
 
 fn combine_output(output: &std::process::Output) -> String {
@@ -738,6 +764,16 @@ mod tests {
             BackendPreference::Gpclient
         );
         assert_eq!(BackendPreference::Gpclient.next(), BackendPreference::Auto);
+    }
+
+    #[test]
+    fn reports_command_timeouts() {
+        let output = limited("sleep", 1).arg("5").output().expect("run timeout");
+        assert_eq!(output.status.code(), Some(124));
+        assert_eq!(
+            timed_out(&output, "sleep", 1).as_deref(),
+            Some("sleep timed out after 1s")
+        );
     }
 
     #[test]

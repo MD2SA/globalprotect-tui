@@ -1,3 +1,5 @@
+//! Command-line entry point for the TUI and the --status helper.
+
 mod app;
 mod client;
 mod config;
@@ -48,19 +50,19 @@ fn print_status() -> Result<()> {
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        print_help();
-        return Ok(());
-    }
-    if args.iter().any(|arg| arg == "--version" || arg == "-V") {
-        println!("gp-tui {}", env!("CARGO_PKG_VERSION"));
-        return Ok(());
-    }
-    if args.iter().any(|arg| arg == "--status") {
-        return print_status();
-    }
-    if let Some(arg) = args.first() {
-        anyhow::bail!("unknown argument: {arg} (try --help)");
+    match args.as_slice() {
+        [] => {}
+        [arg] if arg == "--help" || arg == "-h" => {
+            print_help();
+            return Ok(());
+        }
+        [arg] if arg == "--version" || arg == "-V" => {
+            println!("gp-tui {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        [arg] if arg == "--status" => return print_status(),
+        [arg] => anyhow::bail!("unknown argument: {arg} (try --help)"),
+        _ => anyhow::bail!("expected at most one argument (try --help)"),
     }
 
     let (config, warning) = Config::load();
