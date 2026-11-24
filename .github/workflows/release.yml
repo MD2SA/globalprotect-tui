@@ -11,17 +11,12 @@ permissions:
 jobs:
   gp-tui-linux-x86_64:
     runs-on: ubuntu-22.04
-    defaults:
-      run:
-        working-directory: gp-tui
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: gp-tui
       - name: Build
         run: cargo build --release --locked
       - name: Package

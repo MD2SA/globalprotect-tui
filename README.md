@@ -1,18 +1,14 @@
 # GlobalProtect for Arch Linux (unofficial)
 
-An unofficial installer and terminal UI for Palo Alto Networks GlobalProtect on
-Arch Linux.
+An unofficial terminal UI for Palo Alto Networks GlobalProtect on Arch Linux,
+with an optional installer for the vendor's official CLI.
 
-The project has two parts:
-
-- **`gp_install_arch.sh`** is the compatibility entry point for the Arch
-  installer in [`installers/arch/`](installers/arch/). It installs the official
-  GlobalProtect CLI from the vendor `PanGPLinux-*.tgz` tarball, together with
-  the systemd units and browser callback handler that the vendor's Arch support
-  is missing.
-- **`gp-tui`** is a small terminal frontend for connecting, disconnecting and
-  inspecting status or logs. It works with either the official CLI or the free
-  [`globalprotect-openconnect`][gpoc] backend.
+- **`gp-tui`** is the main project: a small terminal frontend for connecting,
+  disconnecting and inspecting status or logs. It works with either the official
+  CLI or the free [`globalprotect-openconnect`][gpoc] backend.
+- **`installers/arch/`** is optional: it installs the official GlobalProtect CLI
+  from the vendor `PanGPLinux-*.tgz` tarball, together with the systemd units and
+  browser callback handler that the vendor's Arch support is missing.
 
 It is not a VPN implementation and does not store passwords or session cookies.
 SAML/SSO/MFA stays in the system browser.
@@ -20,10 +16,11 @@ SAML/SSO/MFA stays in the system browser.
 Repository layout:
 
 ```
-gp-tui/           terminal UI and its tests
-installers/arch/  optional official-CLI installer and tests
-gp_install_arch.sh  root compatibility wrapper
-docs/             test and validation notes
+src/               terminal UI and its tests
+install.sh         build and install the TUI
+Cargo.toml
+installers/arch/   optional official-CLI installer and tests
+docs/              TUI details, test and validation notes
 ```
 
 [gpoc]: https://archlinux.org/packages/extra/x86_64/globalprotect-openconnect/
@@ -48,7 +45,7 @@ Or build it from source:
 ```bash
 sudo pacman -S --needed git rust globalprotect-openconnect
 git clone https://github.com/MD2SA/gp-arch.git
-cd gp-arch/gp-tui
+cd gp-arch
 ./install.sh
 gp-tui
 ```
@@ -71,10 +68,9 @@ Download `PanGPLinux-*.tgz` from your organisation's VPN page, then:
 
 ```bash
 cd gp-arch
-chmod +x gp_install_arch.sh
-sudo ./gp_install_arch.sh ~/Downloads/PanGPLinux-*.tgz
+chmod +x installers/arch/gp_install_arch.sh
+sudo ./installers/arch/gp_install_arch.sh ~/Downloads/PanGPLinux-*.tgz
 
-cd gp-tui
 ./install.sh
 gp-tui
 ```
@@ -82,7 +78,7 @@ gp-tui
 To inspect the staged files without changing the system:
 
 ```bash
-./gp_install_arch.sh --stage /tmp/gp-stage ~/Downloads/PanGPLinux-*.tgz
+./installers/arch/gp_install_arch.sh --stage /tmp/gp-stage ~/Downloads/PanGPLinux-*.tgz
 ```
 
 ## What the TUI does
@@ -108,8 +104,8 @@ The TUI has three pages:
 The supported terminal minimum is **60×16**; 80×24 or larger is recommended.
 `GP_TUI_ASCII=1` and `NO_COLOR=1` are supported.
 
-See [`gp-tui/README.md`](gp-tui/README.md) for the full keymap, configuration
-and backend details.
+See [`docs/tui.md`](docs/tui.md) for the full keymap, configuration and backend
+details.
 
 ## Requirements and scope
 
@@ -138,20 +134,18 @@ first.
 
 ## Testing
 
-Build and test the TUI:
+Build and test the TUI from the repository root:
 
 ```bash
-cd gp-tui
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 cargo build --release
 ```
 
-Run the installer regression suite from the repository root:
+Run the installer regression suite:
 
 ```bash
-bash -n gp_install_arch.sh
 bash -n installers/arch/gp_install_arch.sh
 bash -n installers/arch/tests/test_installer.sh
 bash installers/arch/tests/test_installer.sh
@@ -182,7 +176,7 @@ rm -f ~/.local/bin/gp-tui
 Remove the official CLI and its services:
 
 ```bash
-sudo ./gp_install_arch.sh --uninstall
+sudo ./installers/arch/gp_install_arch.sh --uninstall
 ```
 
 Add `--purge` only if you also want to remove the invoking user's

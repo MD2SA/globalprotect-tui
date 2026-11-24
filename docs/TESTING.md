@@ -12,7 +12,7 @@ Never include cookies, passwords, tokens or private portal data in test output.
 
 ## Automated tests
 
-Run the TUI checks from `gp-tui/`:
+Run the TUI checks from the repository root:
 
 ```bash
 cargo fmt --check
@@ -25,7 +25,6 @@ cargo build --release
 Run the installer tests from the repository root:
 
 ```bash
-bash -n gp_install_arch.sh
 bash -n installers/arch/gp_install_arch.sh
 bash -n installers/arch/tests/test_installer.sh
 bash installers/arch/tests/test_installer.sh
@@ -37,7 +36,7 @@ commands. It never installs on the host.
 To check a real vendor tarball without changing the system:
 
 ```bash
-./gp_install_arch.sh --stage /tmp/gp-stage PanGPLinux-*.tgz
+./installers/arch/gp_install_arch.sh --stage /tmp/gp-stage PanGPLinux-*.tgz
 ```
 
 The CI workflow runs formatting, Clippy, TUI tests, a release build and the

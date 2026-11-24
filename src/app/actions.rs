@@ -17,7 +17,7 @@ impl App {
         }
         if !self.installed {
             self.push_log(
-                "globalprotect not found in PATH; install it with gp_install_arch.sh first"
+                "globalprotect not found in PATH; install it with installers/arch/gp_install_arch.sh first"
                     .to_string(),
             );
             return;

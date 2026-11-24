@@ -1,6 +1,5 @@
 # Rust build output
 /target/
-/gp-tui/target/
 
 # Local test/build output
 *.log

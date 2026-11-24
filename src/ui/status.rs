@@ -36,7 +36,7 @@ fn draw_setup_page(frame: &mut Frame, app: &App, area: Rect) {
         Style::default().add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(Span::styled(
-        "  sudo ./gp_install_arch.sh PanGPLinux-*.tgz",
+        "  sudo ./installers/arch/gp_install_arch.sh PanGPLinux-*.tgz",
         command,
     )));
     lines.push(Line::from(Span::styled(

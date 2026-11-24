@@ -7,7 +7,8 @@ controls the local backend; it is not a VPN client.
 
 Choose one backend:
 
-- **Official CLI** — installed with [`gp_install_arch.sh`](../gp_install_arch.sh),
+- **Official CLI** — installed with
+  [`installers/arch/gp_install_arch.sh`](../installers/arch/gp_install_arch.sh),
   with `gpd.service` and `gpa.service` working. Requires the vendor tarball.
 - **Free backend** — `gpauth` and `gpclient` from
   [`globalprotect-openconnect`][gpoc]. No vendor tarball is needed.
@@ -33,7 +34,7 @@ curl -fsSL https://github.com/MD2SA/gp-arch/releases/latest/download/gp-tui-x86_
 gp-tui
 ```
 
-From this directory:
+From the repository root:
 
 ```bash
 ./install.sh          # ~/.local/bin/gp-tui
@@ -191,7 +192,7 @@ Writes are atomic. If `config.toml` cannot be parsed, the TUI keeps a copy at
 ## Testing and status
 
 The automated suite covers state handling, config parsing, backend arguments
-and responsive TestBackend layouts. From `gp-tui/`:
+and responsive TestBackend layouts. From the repository root:
 
 ```bash
 cargo fmt --check
@@ -202,8 +203,8 @@ cargo build --release
 ```
 
 Live VPN tests are not part of CI and must be repeated on a real Arch desktop
-with a real portal. See [`../docs/TESTING.md`](../docs/TESTING.md) for the manual
-checklist and current validation state.
+with a real portal. See [`TESTING.md`](TESTING.md) for the manual checklist and
+current validation state.
 
 ## Limits
 

@@ -12,7 +12,6 @@ set -euo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)"
 INSTALLER="$REPO_ROOT/installers/arch/gp_install_arch.sh"
-WRAPPER="$REPO_ROOT/gp_install_arch.sh"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/gp-installer-tests.XXXXXX")"
 
 cleanup() {
@@ -228,11 +227,6 @@ assert_rc "help exits successfully" 0
 assert_output_contains "help documents --stage" "$LAST_OUT" "--stage DIR"
 assert_output_contains "help states the supported scope" "$LAST_OUT" \
     "Supported: Arch Linux or Arch-based, x86_64, systemd, desktop session."
-
-run_installer bash "$WRAPPER" --help
-assert_rc "root wrapper help exits successfully" 0
-assert_output_contains "root wrapper delegates to the Arch installer" "$LAST_OUT" \
-    "--stage DIR"
 
 run_installer bash "$INSTALLER" --definitely-not-an-option
 assert_rc "unknown option is rejected" 1
