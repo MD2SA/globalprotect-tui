@@ -573,7 +573,11 @@ fn run(args: &[&str]) -> Result<String, String> {
 
 fn limited(program: &str, timeout_secs: u64) -> Command {
     let mut command = Command::new("timeout");
-    command.arg(format!("{timeout_secs}s")).arg(program);
+    command
+        .arg("-k")
+        .arg("5s")
+        .arg(format!("{timeout_secs}s"))
+        .arg(program);
     command
 }
 
