@@ -424,6 +424,26 @@ else
     not_ok "NetworkManager config marks gpd0 unmanaged"
 fi
 
+# NetworkManager is optional. Without nmcli the installer must not create its
+# config directory, but everything else must still be staged.
+NO_NM_BIN="$WORK/no-nm-bin"
+mkdir -p "$NO_NM_BIN"
+for tool in bash bsdtar tar install find uname mktemp basename rm mkdir cp ln \
+    head dirname cat chmod gzip; do
+    if tool_path="$(command -v "$tool" 2>/dev/null)"; then
+        ln -sf "$tool_path" "$NO_NM_BIN/$tool"
+    fi
+done
+run_installer env \
+    PATH="$NO_NM_BIN" \
+    GP_OS_RELEASE="$WORK/arch-release" \
+    bash "$INSTALLER" --stage "$WORK/stage-no-nm" "$FIXTURE_TGZ"
+assert_rc "staging without nmcli succeeds" 0
+assert_missing "no NetworkManager config without nmcli" \
+    "$WORK/stage-no-nm/etc/NetworkManager/conf.d/99-globalprotect-unmanaged.conf"
+assert_file "staging without nmcli still installs the CLI" \
+    "$WORK/stage-no-nm/opt/paloaltonetworks/globalprotect/globalprotect"
+
 if [ ! -s "$CALL_LOG" ]; then
     ok "staging did not invoke systemctl, nmcli or runuser"
 else

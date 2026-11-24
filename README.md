@@ -110,8 +110,9 @@ Supported:
 - A graphical desktop session with a browser for SAML/SSO/MFA.
 - Rust/Cargo to build the TUI.
 - `/dev/net/tun`.
-- NetworkManager is recommended for the official backend; the installer
-  configures `gpd0` so NetworkManager leaves the tunnel alone.
+- NetworkManager is recommended, but not required, for the official backend. If
+  NetworkManager is installed, the installer configures `gpd0` so it leaves the
+  tunnel alone.
 
 Not supported:
 

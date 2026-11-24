@@ -179,6 +179,14 @@ configure_networkmanager() {
     local dest="${1:-}"
     local conf="$dest$NM_UNMANAGED_CONF"
 
+    # NetworkManager is optional. Without it there is no gpd0 conflict, so do
+    # not create /etc/NetworkManager/conf.d on hosts that use another network
+    # manager (systemd-networkd, iwd, ...).
+    if ! command -v nmcli >/dev/null 2>&1; then
+        log "nmcli not found; skipping the gpd0 unmanaged config"
+        return 0
+    fi
+
     install -d "$(dirname "$conf")"
     cat >"$conf" <<'EOF'
 # Installed by gp_install_arch.sh: keep NetworkManager away from the gpd0
