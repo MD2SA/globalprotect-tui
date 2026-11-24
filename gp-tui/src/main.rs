@@ -3,6 +3,7 @@
 mod app;
 mod client;
 mod config;
+mod connection;
 mod keymap;
 mod model;
 mod ui;

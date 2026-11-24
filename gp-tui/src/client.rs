@@ -4,7 +4,6 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -343,21 +342,29 @@ pub struct AuthResult {
 }
 
 /// Runs `gpauth` as the user. It opens the system browser and returns the
-/// authentication cookie. The process id is published through `auth_pid` so
-/// the TUI can cancel it without a broad `pkill`.
-pub fn gpclient_auth(portal: &str, auth_pid: Arc<AtomicU32>) -> Result<AuthResult, String> {
+/// authentication cookie. The child process can be cancelled without a broad
+/// process-name match.
+pub fn gpclient_auth(
+    portal: &str,
+    control: Arc<crate::connection::AuthControl>,
+) -> Result<AuthResult, String> {
     let mut command = Command::new("gpauth");
     command
         .args([portal.trim(), "--browser"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let child = command
+    let mut child = command
         .spawn()
         .map_err(|error| format!("failed to run gpauth: {error}"))?;
-    auth_pid.store(child.id(), Ordering::SeqCst);
+    if control.register_child(child.id()) {
+        let _ = child.kill();
+        let _ = child.wait();
+        control.complete();
+        return Err("authentication cancelled".to_string());
+    }
     let output = child.wait_with_output();
-    auth_pid.store(0, Ordering::SeqCst);
+    control.complete();
     let output = output.map_err(|error| format!("waiting for gpauth: {error}"))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
