@@ -550,7 +550,7 @@ impl App {
     fn finish_gpclient_connect(&mut self, cookie: String) {
         self.push_log("SSO done; starting gpclient".to_string());
 
-        if client::sudo_ready(client::SudoOp::Connect) {
+        if client::sudo_connect_ready() {
             self.start_gpclient(cookie);
             return;
         }
@@ -604,15 +604,8 @@ impl App {
             return;
         }
 
-        if !client::sudo_ready(client::SudoOp::Disconnect) {
-            self.busy = true;
-            self.error = None;
-            self.state = VpnState::WaitingSudo;
-            self.push_log("sudo needs a password; enter it in the prompt".to_string());
-            self.open_sudo_prompt(SudoAction::Disconnect);
-            return;
-        }
-
+        // Try the cached timestamp first. If it expired, the worker reports
+        // it and Msg::GpclientDisconnected opens the password prompt.
         self.begin_gpclient_disconnect();
     }
 
@@ -1140,17 +1133,21 @@ impl App {
         match self.backend {
             Backend::Gpclient => {
                 if self.gpclient_child.is_some() || self.state.is_active() {
-                    if client::sudo_ready(client::SudoOp::Disconnect) {
-                        if let Err(error) = client::gpclient_disconnect() {
-                            self.push_log(format!("disconnect before quit failed: {error}"));
+                    match client::gpclient_disconnect() {
+                        Ok(()) => self.should_quit = true,
+                        Err(error) if client::sudo_needs_password(&error) => {
+                            self.busy = true;
+                            self.error = None;
+                            self.state = VpnState::WaitingSudo;
+                            self.push_log(
+                                "sudo needs a password; enter it in the prompt".to_string(),
+                            );
+                            self.open_sudo_prompt(SudoAction::Quit);
                         }
-                        self.should_quit = true;
-                    } else {
-                        self.busy = true;
-                        self.error = None;
-                        self.state = VpnState::WaitingSudo;
-                        self.push_log("sudo needs a password; enter it in the prompt".to_string());
-                        self.open_sudo_prompt(SudoAction::Quit);
+                        Err(error) => {
+                            self.push_log(format!("disconnect before quit failed: {error}"));
+                            self.should_quit = true;
+                        }
                     }
                 } else {
                     self.should_quit = true;
@@ -1795,6 +1792,22 @@ mod tests {
         assert_eq!(prompt.password, b"x");
         assert_eq!(app.sudo_cookie.as_deref(), Some("second"));
         assert!(app.pending_cookie.is_none());
+    }
+
+    #[test]
+    fn expired_sudo_on_disconnect_opens_the_password_prompt() {
+        let mut app = test_app();
+        app.state = VpnState::Disconnecting;
+        app.busy = true;
+
+        app.handle_msg(Msg::GpclientDisconnected(Err(
+            "sudo: a password is required".to_string(),
+        )));
+
+        assert_eq!(app.state, VpnState::WaitingSudo);
+        assert!(app.busy);
+        let prompt = app.sudo_prompt.as_ref().unwrap();
+        assert_eq!(prompt.action, SudoAction::Disconnect);
     }
 
     #[test]

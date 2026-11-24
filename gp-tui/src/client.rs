@@ -380,26 +380,15 @@ pub fn gpclient_auth(portal: &str, on_start: impl FnOnce(u32)) -> Result<AuthRes
     Ok(AuthResult { cookie, logs })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SudoOp {
-    Connect,
-    Disconnect,
-}
-
-/// True when the matching `sudo -n gpclient` command can run without a prompt,
-/// either because sudo has a cached timestamp or because the user has a
-/// NOPASSWD rule for it.
+/// True when `sudo -n gpclient connect` can run without a prompt, either
+/// because sudo has a cached timestamp or because the user has a NOPASSWD rule
+/// for it.
 ///
 /// Probing with `--help` avoids touching the tunnel and works with narrow
 /// sudoers rules such as `NOPASSWD: /usr/bin/gpclient connect *`.
-pub fn sudo_ready(op: SudoOp) -> bool {
-    let args: &[&str] = match op {
-        SudoOp::Connect => &["gpclient", "connect", "--help"],
-        SudoOp::Disconnect => &["gpclient", "disconnect", "--help"],
-    };
+pub fn sudo_connect_ready() -> bool {
     Command::new("sudo")
-        .arg("-n")
-        .args(args)
+        .args(["-n", "gpclient", "connect", "--help"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
