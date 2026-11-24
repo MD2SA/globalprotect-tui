@@ -3,6 +3,8 @@
 mod app;
 mod client;
 mod config;
+mod keymap;
+mod model;
 mod ui;
 
 use anyhow::Result;

@@ -3,6 +3,7 @@
 use crate::app::{App, Field, Modal, Page, SudoAction, SudoPrompt, VpnState};
 use crate::client::{detect_backend, Backend, BackendPreference};
 use crate::config::Profile;
+use crate::keymap::{self, Action as KeyAction, HelpGroup};
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -835,50 +836,17 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let hints: Vec<&str> = match &app.modal {
         Modal::Edit(_) | Modal::RenameProfile => vec!["Enter save", "Esc cancel"],
         Modal::Search => vec!["Enter apply", "Esc cancel", "/ logs"],
-        _ => match app.page {
-            Page::Status => {
-                let mut hints = if app.state == VpnState::WaitingBrowser {
-                    vec!["Esc cancel auth", "1/2/3 pages", "? all keys", "q quit"]
-                } else if app.state == VpnState::NoBackend {
-                    vec!["2 profiles", "1/2/3 pages", "? help", "q quit"]
-                } else {
-                    vec!["1/2/3 pages", "r refresh", "? all keys", "q quit"]
-                };
-                if app.backend == Backend::Official {
-                    hints.push("g gpa");
-                }
-                hints.push("y diag");
-                hints
+        _ => {
+            let mut hints = keymap::footer_for(app.page);
+            if app.page == Page::Status && app.state == VpnState::WaitingBrowser {
+                hints.retain(|hint| !matches!(*hint, "c connect" | "d disconnect"));
+                hints.push("Esc cancel auth");
             }
-            Page::Profiles => vec![
-                "j/k select",
-                "Enter activate",
-                "e settings",
-                "? all keys",
-                "n/R/D",
-                "q quit",
-                "h/l pages",
-            ],
-            Page::Config => vec![
-                "j/k",
-                "Enter edit/cycle",
-                "b backend",
-                "Esc back",
-                "? all keys",
-                "q quit",
-                "h/l pages",
-            ],
-            Page::Logs => vec![
-                "j/k scroll",
-                "f follow",
-                "/ search",
-                "L load",
-                "? all keys",
-                "w wrap",
-                "q quit",
-                "Ctrl+d/u",
-            ],
-        },
+            if app.backend != Backend::Official {
+                hints.retain(|hint| *hint != "g gpa");
+            }
+            hints
+        }
     };
     let text = fit_hints(&hints, width);
     frame.render_widget(
@@ -933,103 +901,102 @@ fn draw_help(frame: &mut Frame, app: &App) {
 }
 
 fn help_lines(app: &App, inner_width: usize, inner_height: usize) -> Vec<Line<'static>> {
-    if inner_height >= 25 && inner_width >= 76 {
-        full_help_lines(app)
-    } else if inner_height >= 20 && inner_width >= 62 {
-        standard_help_lines(app)
-    } else {
-        compact_help_lines()
+    let compact = inner_height < 20 || inner_width < 62;
+    let detailed = inner_height >= 25 && inner_width >= 76;
+    let mut lines = Vec::new();
+
+    for (group, title) in keymap::help_groups() {
+        let mut items = keymap::help_items(group);
+        items.retain(|(action, _, _)| {
+            if app.backend != Backend::Official && *action == KeyAction::StartGpa {
+                return false;
+            }
+            !compact || compact_help_action(group, *action)
+        });
+        if items.is_empty() {
+            continue;
+        }
+
+        let details = items
+            .iter()
+            .map(|(_, keys, help)| format!("{keys} {help}"))
+            .collect::<Vec<_>>()
+            .join(" · ");
+        if detailed {
+            lines.push(help_heading(title));
+            lines.push(help_text(&details));
+        } else {
+            lines.push(help_text(&format!("{title}: {details}")));
+        }
     }
-}
 
-fn compact_help_lines() -> Vec<Line<'static>> {
-    vec![
-        help_text("Pages: 1 Status · 2 Profiles · 3 Logs · Tab next"),
-        help_text("  Shift+Tab/h/l prev-next · j/k move/scroll"),
-        help_text("Status: c connect · d disconnect · r refresh"),
-        help_text("  Esc cancels browser auth · g gpa (official)"),
-        help_text("Profiles: Enter activate · e settings · n new"),
-        help_text("  R rename · D delete"),
-        help_text("Settings: j/k · Enter edit/cycle · b backend · Esc back"),
-        help_text("  p portal · u user · SSL-only needs official backend"),
-        help_text("Logs: j/k/arrow scroll · Ctrl+d/u · PgUp/PgDn · Home/End"),
-        help_text("  G tail · f follow · w wrap · / search · L load"),
-        help_text("Global: ? help · Esc back/cancel · q/Ctrl+C quit"),
-        help_text("  y diagnostics · MFA stays in browser"),
-        help_text("Backends: official CLI or free gpauth+gpclient"),
-        help_text("Esc or ? to close"),
-    ]
-}
-
-fn standard_help_lines(app: &App) -> Vec<Line<'static>> {
-    vec![
-        help_text("Pages: 1/2/3 · Tab/Shift+Tab · h/l · j/k move"),
-        help_text("Status: c connect · d disconnect · r refresh · g gpa (official)"),
-        help_text("  Esc cancels browser authentication"),
-        help_text(&format!(
-            "States: {} connected · {} working · {} error",
-            state_dot(VpnState::Connected),
-            state_dot(VpnState::WaitingBrowser),
-            state_dot(VpnState::Error)
-        )),
-        help_text("Profiles: Enter activate · e settings · n new"),
-        help_text("  R rename · D delete"),
-        help_text("Settings: j/k · Enter edit/cycle · b backend · Esc back"),
-        help_text("  p portal · u user · SSL-only needs official backend"),
-        help_text("Logs: j/k/arrows scroll · Ctrl+d/u · PgUp/PgDn · Home/End"),
-        help_text("  G tail · f follow · w wrap · / search · L load"),
-        help_text("Global: ? help · Esc back/cancel · q/Ctrl+C quit"),
-        help_text("  y diagnostics · MFA stays in browser"),
-        help_text(&format!(
+    if !compact {
+        lines.push(help_text(&format!(
             "Current: {} · backend {} · pref {}",
             app.state.label(),
             app.backend.label(),
             app.preference.as_str()
-        )),
-        help_text("Backends: official CLI or free gpauth+gpclient"),
-        help_text("  official: sudo ./gp_install_arch.sh PanGPLinux-*.tgz"),
-        help_text("  free: sudo pacman -S globalprotect-openconnect"),
-        help_text("Esc or ? to close"),
-    ]
+        )));
+        lines.push(help_text("Backends: official CLI or free gpauth+gpclient"));
+    }
+    lines.push(help_text(
+        "MFA stays in the browser; VPN credentials are not stored.",
+    ));
+    lines.push(help_text("Esc or ? to close"));
+    lines
 }
 
-fn full_help_lines(app: &App) -> Vec<Line<'static>> {
-    vec![
-        help_heading("Pages"),
-        help_text("1/2/3 switch · Tab/Shift+Tab next/prev · h/l pages"),
-        help_text("j/k select or scroll"),
-        help_heading("Status"),
-        help_text("c connect · d disconnect · r refresh · g start gpa (official)"),
-        help_text("Esc cancels browser authentication"),
-        help_text(&format!(
-            "States: {} connected · {} working · {} error",
-            state_dot(VpnState::Connected),
-            state_dot(VpnState::WaitingBrowser),
-            state_dot(VpnState::Error)
-        )),
-        help_heading("Profiles"),
-        help_text("j/k select · Enter activate · e settings · n new"),
-        help_text("R rename · D delete"),
-        help_heading("Settings"),
-        help_text("j/k select · Enter edit/cycle · b backend · Esc back"),
-        help_text("p quick portal · u quick user · SSL-only requires official backend"),
-        help_heading("Logs"),
-        help_text("j/k or arrows scroll · Ctrl+d/u · PgUp/PgDn · Home/End"),
-        help_text("G tail · f follow · w wrap · / search · L load"),
-        help_heading("Global"),
-        help_text("? help · Esc back/cancel · q/Ctrl+C quit · y diagnostics"),
-        help_text(&format!(
-            "Current: {} · backend {} · pref {}",
-            app.state.label(),
-            app.backend.label(),
-            app.preference.as_str()
-        )),
-        help_heading("Backends"),
-        help_text("official: sudo ./gp_install_arch.sh PanGPLinux-*.tgz"),
-        help_text("free: sudo pacman -S globalprotect-openconnect"),
-        help_text("MFA stays in the browser; no passwords are stored."),
-        help_text("Esc or ? to close"),
-    ]
+fn compact_help_action(group: HelpGroup, action: KeyAction) -> bool {
+    match group {
+        HelpGroup::Pages => matches!(
+            action,
+            KeyAction::StatusPage
+                | KeyAction::ProfilesPage
+                | KeyAction::LogsPage
+                | KeyAction::NextPage
+                | KeyAction::PreviousPage
+                | KeyAction::MoveDown
+                | KeyAction::MoveUp
+        ),
+        HelpGroup::Status => matches!(
+            action,
+            KeyAction::Connect | KeyAction::Disconnect | KeyAction::Refresh | KeyAction::StartGpa
+        ),
+        HelpGroup::Profiles => matches!(
+            action,
+            KeyAction::NewProfile
+                | KeyAction::RenameProfile
+                | KeyAction::EditProfile
+                | KeyAction::DeleteProfile
+                | KeyAction::ActivateProfile
+        ),
+        HelpGroup::Settings => matches!(
+            action,
+            KeyAction::CycleBackend
+                | KeyAction::ConfigActivate
+                | KeyAction::EditPortal
+                | KeyAction::EditUsername
+        ),
+        HelpGroup::Logs => matches!(
+            action,
+            KeyAction::MoveDown
+                | KeyAction::MoveUp
+                | KeyAction::LogsTop
+                | KeyAction::LogsBottom
+                | KeyAction::ToggleLogFollow
+                | KeyAction::ToggleLogWrap
+                | KeyAction::SearchLogs
+                | KeyAction::CollectLogs
+                | KeyAction::LogPageUp
+                | KeyAction::LogPageDown
+                | KeyAction::LogHalfPageDown
+                | KeyAction::LogHalfPageUp
+        ),
+        HelpGroup::Global => matches!(
+            action,
+            KeyAction::Help | KeyAction::Escape | KeyAction::Quit | KeyAction::Diagnostics
+        ),
+    }
 }
 
 fn help_heading(label: &str) -> Line<'static> {

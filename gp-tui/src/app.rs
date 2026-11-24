@@ -2,6 +2,8 @@
 
 use crate::client::{self, Backend, BackendPreference, Details, Snapshot};
 use crate::config::Config;
+use crate::keymap::{self, Action as KeyAction};
+pub use crate::model::{Field, Page, VpnState};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::DefaultTerminal;
@@ -27,96 +29,6 @@ pub enum Msg {
     LogCollected(Result<String, String>),
     SslOnlyLoaded(Result<bool, String>),
     SslOnlySet(Result<bool, String>),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Field {
-    Portal,
-    Username,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Page {
-    Status,
-    Profiles,
-    Config,
-    Logs,
-}
-
-impl Page {
-    pub fn next_visible(self) -> Self {
-        match self {
-            Self::Status => Self::Profiles,
-            Self::Profiles | Self::Config => Self::Logs,
-            Self::Logs => Self::Status,
-        }
-    }
-
-    pub fn previous_visible(self) -> Self {
-        match self {
-            Self::Status => Self::Logs,
-            Self::Profiles => Self::Status,
-            Self::Logs | Self::Config => Self::Profiles,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VpnState {
-    NoBackend,
-    Disconnected,
-    WaitingBrowser,
-    WaitingSudo,
-    Connecting,
-    Connected,
-    Disconnecting,
-    Error,
-    Unknown,
-}
-
-impl VpnState {
-    pub fn from_snapshot(status: &str) -> Self {
-        match status {
-            "Connected" => Self::Connected,
-            "Disconnected" => Self::Disconnected,
-            "Connecting" => Self::Connecting,
-            "Error" => Self::Error,
-            "Not installed" => Self::NoBackend,
-            _ => Self::Unknown,
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::NoBackend => "No backend",
-            Self::Disconnected => "Disconnected",
-            Self::WaitingBrowser => "Waiting for browser",
-            Self::WaitingSudo => "Waiting for sudo",
-            Self::Connecting => "Connecting",
-            Self::Connected => "Connected",
-            Self::Disconnecting => "Disconnecting",
-            Self::Error => "Error",
-            Self::Unknown => "Unknown",
-        }
-    }
-
-    pub fn is_busy(self) -> bool {
-        matches!(
-            self,
-            Self::WaitingBrowser | Self::WaitingSudo | Self::Connecting | Self::Disconnecting
-        )
-    }
-
-    pub fn is_active(self) -> bool {
-        matches!(
-            self,
-            Self::Connected
-                | Self::WaitingBrowser
-                | Self::WaitingSudo
-                | Self::Connecting
-                | Self::Disconnecting
-        )
-    }
 }
 
 /// Reconcile a polled snapshot with an operation that is still in progress.
@@ -960,164 +872,66 @@ impl App {
             return false;
         }
 
-        if key.modifiers.contains(KeyModifiers::CONTROL) {
-            match key.code {
-                KeyCode::Char('d') if self.page == Page::Logs => self.scroll_logs(-10),
-                KeyCode::Char('u') if self.page == Page::Logs => self.scroll_logs(10),
-                _ => {}
-            }
+        let Some(action) = keymap::action_for(key, self.page) else {
             return false;
-        }
+        };
 
-        match key.code {
-            KeyCode::Char('?') => {
-                self.modal = Modal::Help;
-                return false;
-            }
-            KeyCode::Tab => {
-                self.page = self.page.next_visible();
-                return false;
-            }
-            KeyCode::BackTab => {
-                self.page = self.page.previous_visible();
-                return false;
-            }
-            KeyCode::Char('1') => {
-                self.page = Page::Status;
-                return false;
-            }
-            KeyCode::Char('2') => {
-                self.page = Page::Profiles;
-                return false;
-            }
-            KeyCode::Char('3') => {
-                self.page = Page::Logs;
-                return false;
-            }
-            KeyCode::Char('h') => {
-                self.page = self.page.previous_visible();
-                return false;
-            }
-            KeyCode::Char('l') => {
-                self.page = self.page.next_visible();
-                return false;
-            }
-            KeyCode::Char('q') => return self.request_quit(),
-            KeyCode::Esc => {
-                if self.state == VpnState::WaitingBrowser {
-                    self.cancel_auth(false);
-                    return false;
-                }
-                if self.page == Page::Logs && self.log_search.is_some() {
-                    self.log_search = None;
-                    self.log_follow = true;
-                    self.log_from_bottom = 0;
-                } else if self.page == Page::Config {
-                    self.page = Page::Profiles;
-                } else if self.page == Page::Status {
-                    return self.request_quit();
-                } else {
-                    self.page = Page::Status;
-                }
-                return false;
-            }
-            KeyCode::Char('n') if self.page == Page::Profiles => self.new_profile(),
-            KeyCode::Char('R') if self.page == Page::Profiles => self.begin_rename_profile(),
-            KeyCode::Char('e') if self.page == Page::Profiles => self.edit_selected_profile(),
-            KeyCode::Char('D') if self.page == Page::Profiles => self.request_delete_profile(),
-            KeyCode::Enter if self.page == Page::Profiles => self.activate_selected_profile(),
-            KeyCode::Char('c') => match self.backend {
-                Backend::Gpclient => self.gpclient_connect(),
-                Backend::Official => self.spawn_connect(),
-                Backend::None => self.push_log(
-                    "no backend installed: install globalprotect or globalprotect-openconnect"
-                        .to_string(),
-                ),
-            },
-            KeyCode::Char('d') => match self.backend {
-                Backend::Gpclient => self.gpclient_disconnect(),
-                Backend::Official => self.spawn_disconnect(),
-                Backend::None => self.push_log(
-                    "no backend installed: install globalprotect or globalprotect-openconnect"
-                        .to_string(),
-                ),
-            },
-            KeyCode::Char('r') => self.spawn_refresh(),
-            KeyCode::Char('y') => self.write_diagnostics(),
-            KeyCode::Char('b') => self.cycle_backend(),
-            KeyCode::Char('g') => self.spawn_start_gpa(),
-            KeyCode::Char('/') => {
+        match action {
+            KeyAction::Help => self.modal = Modal::Help,
+            KeyAction::NextPage => self.page = self.page.next_visible(),
+            KeyAction::PreviousPage => self.page = self.page.previous_visible(),
+            KeyAction::StatusPage => self.page = Page::Status,
+            KeyAction::ProfilesPage => self.page = Page::Profiles,
+            KeyAction::LogsPage => self.page = Page::Logs,
+            KeyAction::Quit => return self.request_quit(),
+            KeyAction::Escape => self.handle_escape(),
+            KeyAction::NewProfile => self.new_profile(),
+            KeyAction::RenameProfile => self.begin_rename_profile(),
+            KeyAction::EditProfile => self.edit_selected_profile(),
+            KeyAction::DeleteProfile => self.request_delete_profile(),
+            KeyAction::ActivateProfile => self.activate_selected_profile(),
+            KeyAction::Connect => self.connect_active_backend(),
+            KeyAction::Disconnect => self.disconnect_active_backend(),
+            KeyAction::Refresh => self.spawn_refresh(),
+            KeyAction::Diagnostics => self.write_diagnostics(),
+            KeyAction::CycleBackend => self.cycle_backend(),
+            KeyAction::StartGpa => self.spawn_start_gpa(),
+            KeyAction::SearchLogs => {
                 self.page = Page::Logs;
                 self.modal = Modal::Search;
                 self.input = self.log_search.clone().unwrap_or_default();
             }
-            KeyCode::Char('L') => {
+            KeyAction::CollectLogs => {
                 self.page = Page::Logs;
                 self.spawn_collect_log();
             }
-            KeyCode::Char('p') => {
+            KeyAction::EditPortal => {
                 self.page = Page::Config;
                 self.config_index = 0;
                 self.begin_edit(Field::Portal);
             }
-            KeyCode::Char('u') => {
+            KeyAction::EditUsername => {
                 self.page = Page::Config;
                 self.config_index = 1;
                 self.begin_edit(Field::Username);
             }
-            KeyCode::Char('j') => match self.page {
-                Page::Profiles => self.next_profile(),
-                Page::Config => {
-                    self.config_index = (self.config_index + 1) % 4;
-                }
-                Page::Logs => self.scroll_logs(-1),
-                Page::Status => {}
-            },
-            KeyCode::Char('k') => match self.page {
-                Page::Profiles => self.previous_profile(),
-                Page::Config => {
-                    self.config_index = (self.config_index + 3) % 4;
-                }
-                Page::Logs => self.scroll_logs(1),
-                Page::Status => {}
-            },
-            KeyCode::Char('G') if self.page == Page::Logs => {
-                self.log_follow = true;
-                self.log_from_bottom = 0;
-            }
-            KeyCode::Up => match self.page {
-                Page::Profiles => self.previous_profile(),
-                Page::Config => {
-                    self.config_index = (self.config_index + 3) % 4;
-                }
-                Page::Logs => self.scroll_logs(1),
-                Page::Status => {}
-            },
-            KeyCode::Down => match self.page {
-                Page::Profiles => self.next_profile(),
-                Page::Config => {
-                    self.config_index = (self.config_index + 1) % 4;
-                }
-                Page::Logs => self.scroll_logs(-1),
-                Page::Status => {}
-            },
-            KeyCode::PageUp if self.page == Page::Logs => self.scroll_logs(10),
-            KeyCode::PageDown if self.page == Page::Logs => self.scroll_logs(-10),
-            KeyCode::Home if self.page == Page::Logs => {
+            KeyAction::MoveDown => self.move_down(),
+            KeyAction::MoveUp => self.move_up(),
+            KeyAction::LogsTop => {
                 self.log_follow = false;
                 self.log_from_bottom = self.logs.len();
             }
-            KeyCode::End if self.page == Page::Logs => {
+            KeyAction::LogsBottom => {
                 self.log_follow = true;
                 self.log_from_bottom = 0;
             }
-            KeyCode::Char('f') if self.page == Page::Logs => {
+            KeyAction::ToggleLogFollow => {
                 self.log_follow = !self.log_follow;
                 if self.log_follow {
                     self.log_from_bottom = 0;
                 }
             }
-            KeyCode::Char('w') if self.page == Page::Logs => {
+            KeyAction::ToggleLogWrap => {
                 self.log_wrap = !self.log_wrap;
                 self.set_notice(if self.log_wrap {
                     "Log wrap on"
@@ -1125,15 +939,72 @@ impl App {
                     "Log wrap off"
                 });
             }
-            KeyCode::Enter if self.page == Page::Config => match self.config_index {
+            KeyAction::LogPageUp => self.scroll_logs(10),
+            KeyAction::LogPageDown => self.scroll_logs(-10),
+            KeyAction::ConfigActivate => match self.config_index {
                 0 => self.begin_edit(Field::Portal),
                 1 => self.begin_edit(Field::Username),
                 2 => self.cycle_backend(),
                 _ => self.toggle_ssl_only(),
             },
-            _ => {}
+            KeyAction::LogHalfPageDown => self.scroll_logs(-10),
+            KeyAction::LogHalfPageUp => self.scroll_logs(10),
         }
         false
+    }
+
+    fn handle_escape(&mut self) {
+        if self.state == VpnState::WaitingBrowser {
+            self.cancel_auth(false);
+        } else if self.page == Page::Logs && self.log_search.is_some() {
+            self.log_search = None;
+            self.log_follow = true;
+            self.log_from_bottom = 0;
+        } else if self.page == Page::Config {
+            self.page = Page::Profiles;
+        } else if self.page == Page::Status {
+            self.should_quit = self.request_quit();
+        } else {
+            self.page = Page::Status;
+        }
+    }
+
+    fn connect_active_backend(&mut self) {
+        match self.backend {
+            Backend::Gpclient => self.gpclient_connect(),
+            Backend::Official => self.spawn_connect(),
+            Backend::None => self.push_log(
+                "no backend installed: install globalprotect or globalprotect-openconnect",
+            ),
+        }
+    }
+
+    fn disconnect_active_backend(&mut self) {
+        match self.backend {
+            Backend::Gpclient => self.gpclient_disconnect(),
+            Backend::Official => self.spawn_disconnect(),
+            Backend::None => self.push_log(
+                "no backend installed: install globalprotect or globalprotect-openconnect",
+            ),
+        }
+    }
+
+    fn move_down(&mut self) {
+        match self.page {
+            Page::Profiles => self.next_profile(),
+            Page::Config => self.config_index = (self.config_index + 1) % 4,
+            Page::Logs => self.scroll_logs(-1),
+            Page::Status => {}
+        }
+    }
+
+    fn move_up(&mut self) {
+        match self.page {
+            Page::Profiles => self.previous_profile(),
+            Page::Config => self.config_index = (self.config_index + 3) % 4,
+            Page::Logs => self.scroll_logs(1),
+            Page::Status => {}
+        }
     }
 
     fn scroll_logs(&mut self, delta: isize) {
