@@ -1,4 +1,4 @@
-use crate::app::{App, Field, Mode, Page, SudoAction, VpnState};
+use crate::app::{App, Field, Modal, Page, SudoAction, SudoPrompt, VpnState};
 use crate::client::{detect_backend, Backend, BackendPreference};
 use crate::config::Profile;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
@@ -44,11 +44,11 @@ fn cursor() -> &'static str {
     }
 }
 
-fn spinner(app: &App) -> &'static str {
+fn spinner(tick: u64) -> &'static str {
     if ascii_mode() {
-        SPINNER_ASCII[(app.tick as usize / 2) % SPINNER_ASCII.len()]
+        SPINNER_ASCII[(tick as usize / 2) % SPINNER_ASCII.len()]
     } else {
-        SPINNER[(app.tick as usize / 2) % SPINNER.len()]
+        SPINNER[(tick as usize / 2) % SPINNER.len()]
     }
 }
 
@@ -94,17 +94,12 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     draw_footer(frame, app, chunks[2]);
 
-    if app.help {
-        draw_help(frame, app);
-    }
-    if app.quit_modal {
-        draw_quit_modal(frame, app);
-    }
-    if app.profile_delete.is_some() {
-        draw_profile_delete_modal(frame, app);
-    }
-    if app.sudo_prompt.is_some() {
-        draw_sudo_modal(frame, app);
+    match &app.modal {
+        Modal::Help => draw_help(frame, app),
+        Modal::Quit => draw_quit_modal(frame, app),
+        Modal::DeleteProfile(name) => draw_profile_delete_modal(frame, name),
+        Modal::Sudo(prompt) => draw_sudo_modal(frame, prompt, app.tick),
+        Modal::None | Modal::Edit(_) | Modal::RenameProfile | Modal::Search => {}
     }
 }
 
@@ -521,7 +516,7 @@ fn draw_profiles_page(frame: &mut Frame, app: &App, area: Rect) {
         for (index, profile) in app.cfg.profiles.iter().enumerate() {
             let selected = index == app.profile_index;
             let is_active = profile.name == app.cfg.active;
-            let rename = if selected && matches!(app.mode, Mode::RenameProfile) {
+            let rename = if selected && matches!(&app.modal, Modal::RenameProfile) {
                 Some(app.input.as_str())
             } else {
                 None
@@ -642,7 +637,7 @@ fn profile_row(
 
 fn draw_config_page(frame: &mut Frame, app: &App, area: Rect) {
     let editing =
-        |field: Field| -> bool { matches!(app.mode, Mode::Edit(current) if current == field) };
+        |field: Field| -> bool { matches!(&app.modal, Modal::Edit(current) if *current == field) };
 
     let portal = if editing(Field::Portal) {
         format!("{}{}", app.input, cursor())
@@ -835,11 +830,10 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let hints: Vec<&str> = match app.mode {
-        Mode::Edit(_) => vec!["Enter save", "Esc cancel"],
-        Mode::RenameProfile => vec!["Enter save", "Esc cancel"],
-        Mode::Search => vec!["Enter apply", "Esc cancel", "/ logs"],
-        Mode::Normal => match app.page {
+    let hints: Vec<&str> = match &app.modal {
+        Modal::Edit(_) | Modal::RenameProfile => vec!["Enter save", "Esc cancel"],
+        Modal::Search => vec!["Enter apply", "Esc cancel", "/ logs"],
+        _ => match app.page {
             Page::Status => {
                 let mut hints = if app.state == VpnState::WaitingBrowser {
                     vec!["Esc cancel auth", "1/2/3 pages", "? all keys", "q quit"]
@@ -1090,10 +1084,7 @@ fn draw_quit_modal(frame: &mut Frame, app: &App) {
     );
 }
 
-fn draw_profile_delete_modal(frame: &mut Frame, app: &App) {
-    let Some(name) = &app.profile_delete else {
-        return;
-    };
+fn draw_profile_delete_modal(frame: &mut Frame, name: &str) {
     let area = centered(frame.area(), 64, 30);
     frame.render_widget(Clear, area);
 
@@ -1119,10 +1110,7 @@ fn draw_profile_delete_modal(frame: &mut Frame, app: &App) {
     );
 }
 
-fn draw_sudo_modal(frame: &mut Frame, app: &App) {
-    let Some(prompt) = &app.sudo_prompt else {
-        return;
-    };
+fn draw_sudo_modal(frame: &mut Frame, prompt: &SudoPrompt, tick: u64) {
     let area = centered_size(frame.area(), 64, 10);
     frame.render_widget(Clear, area);
 
@@ -1143,7 +1131,7 @@ fn draw_sudo_modal(frame: &mut Frame, app: &App) {
             Line::from(vec![
                 Span::raw(format!("Password for {user}: ")),
                 Span::styled(
-                    format!("{} checking...", spinner(app)),
+                    format!("{} checking...", spinner(tick)),
                     Style::default().fg(tint(Color::Yellow)),
                 ),
             ])
@@ -1413,7 +1401,7 @@ mod tests {
     fn help_reaches_final_content_at_common_sizes() {
         for (width, height) in [(60, 16), (80, 24), (100, 32), (120, 40)] {
             let mut app = test_app();
-            app.help = true;
+            app.modal = Modal::Help;
             let text = render(&app, width, height);
             assert!(
                 text.contains("Pages"),
@@ -1518,7 +1506,7 @@ mod tests {
     #[test]
     fn renders_quit_modal() {
         let mut app = status_app(VpnState::Connected);
-        app.quit_modal = true;
+        app.modal = Modal::Quit;
         let text = render(&app, 100, 32);
         assert!(text.contains("Quit?"));
         assert!(text.contains("Disconnect and quit"));
@@ -1528,7 +1516,7 @@ mod tests {
     fn renders_profile_delete_modal() {
         let mut app = test_app();
         app.page = Page::Profiles;
-        app.profile_delete = Some("default".to_string());
+        app.modal = Modal::DeleteProfile("default".to_string());
         let text = render(&app, 100, 32);
         assert!(text.contains("Delete profile?"));
     }
@@ -1574,7 +1562,7 @@ mod tests {
         let mut app = status_app(VpnState::WaitingSudo);
         let mut prompt = SudoPrompt::new(SudoAction::Connect);
         prompt.password = b"hunter2".to_vec();
-        app.sudo_prompt = Some(prompt);
+        app.modal = Modal::Sudo(prompt);
 
         let text = render(&app, 80, 24);
         assert!(text.contains("sudo authentication"));
@@ -1586,7 +1574,7 @@ mod tests {
     #[test]
     fn sudo_modal_fits_minimum_terminal() {
         let mut app = status_app(VpnState::WaitingSudo);
-        app.sudo_prompt = Some(SudoPrompt::new(SudoAction::Quit));
+        app.modal = Modal::Sudo(SudoPrompt::new(SudoAction::Quit));
         let text = render(&app, 60, 16);
         assert!(text.contains("sudo authentication"));
         assert!(text.contains("before quitting"));

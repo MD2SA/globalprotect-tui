@@ -151,12 +151,15 @@ fn systemctl_state(args: &[&str]) -> String {
         .unwrap_or_else(|_| "unavailable".to_string())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
-    Normal,
+pub enum Modal {
+    None,
+    Help,
+    Quit,
+    DeleteProfile(String),
     Edit(Field),
     RenameProfile,
     Search,
+    Sudo(SudoPrompt),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -220,18 +223,14 @@ pub struct App {
     pub logs: VecDeque<String>,
     pub busy: bool,
     pub poll_inflight: bool,
-    pub mode: Mode,
+    pub modal: Modal,
     pub page: Page,
     pub config_index: usize,
     pub profile_index: usize,
-    pub profile_delete: Option<String>,
     pub log_follow: bool,
     pub log_wrap: bool,
     pub log_search: Option<String>,
     pub log_from_bottom: usize,
-    pub help: bool,
-    pub quit_modal: bool,
-    pub sudo_prompt: Option<SudoPrompt>,
     pub should_quit: bool,
     pub ssl_only: Option<bool>,
     pub ssl_only_inflight: bool,
@@ -272,18 +271,14 @@ impl App {
             logs: VecDeque::new(),
             busy: false,
             poll_inflight: false,
-            mode: Mode::Normal,
+            modal: Modal::None,
             page: Page::Status,
             config_index: 0,
             profile_index: 0,
-            profile_delete: None,
             log_follow: true,
             log_wrap: false,
             log_search: None,
             log_from_bottom: 0,
-            help: false,
-            quit_modal: false,
-            sudo_prompt: None,
             should_quit: false,
             ssl_only: None,
             ssl_only_inflight: false,
@@ -577,7 +572,7 @@ impl App {
     fn begin_sudo_connect(&mut self, cookie: String) {
         self.state = VpnState::WaitingSudo;
         self.sudo_cookie = Some(cookie);
-        if self.sudo_prompt.is_none() {
+        if self.sudo_prompt().is_none() {
             self.push_log("sudo needs a password; enter it in the prompt".to_string());
             self.open_sudo_prompt(SudoAction::Connect);
         }
@@ -636,11 +631,35 @@ impl App {
     }
 
     fn open_sudo_prompt(&mut self, action: SudoAction) {
-        self.sudo_prompt = Some(SudoPrompt::new(action));
+        self.modal = Modal::Sudo(SudoPrompt::new(action));
+    }
+
+    fn sudo_prompt(&self) -> Option<&SudoPrompt> {
+        match &self.modal {
+            Modal::Sudo(prompt) => Some(prompt),
+            _ => None,
+        }
+    }
+
+    fn sudo_prompt_mut(&mut self) -> Option<&mut SudoPrompt> {
+        match &mut self.modal {
+            Modal::Sudo(prompt) => Some(prompt),
+            _ => None,
+        }
+    }
+
+    fn take_sudo_prompt(&mut self) -> Option<SudoPrompt> {
+        match std::mem::replace(&mut self.modal, Modal::None) {
+            Modal::Sudo(prompt) => Some(prompt),
+            modal => {
+                self.modal = modal;
+                None
+            }
+        }
     }
 
     fn handle_sudo_key(&mut self, key: KeyEvent) -> bool {
-        if self.sudo_prompt.is_none() {
+        if self.sudo_prompt().is_none() {
             return false;
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
@@ -651,12 +670,12 @@ impl App {
             KeyCode::Enter => self.submit_sudo(),
             KeyCode::Esc => self.cancel_sudo_prompt(),
             KeyCode::Backspace => {
-                if let Some(prompt) = self.sudo_prompt.as_mut() {
+                if let Some(prompt) = self.sudo_prompt_mut() {
                     prompt.pop_char();
                 }
             }
             KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if let Some(prompt) = self.sudo_prompt.as_mut() {
+                if let Some(prompt) = self.sudo_prompt_mut() {
                     prompt.push_char(character);
                 }
             }
@@ -666,21 +685,26 @@ impl App {
     }
 
     fn submit_sudo(&mut self) {
-        let Some(prompt) = self.sudo_prompt.as_mut() else {
+        let Some(prompt) = self.sudo_prompt() else {
             return;
         };
         if prompt.inflight {
             return;
         }
         if prompt.password.is_empty() {
-            prompt.error = Some("password cannot be empty".to_string());
+            if let Some(prompt) = self.sudo_prompt_mut() {
+                prompt.error = Some("password cannot be empty".to_string());
+            }
             return;
         }
 
-        prompt.inflight = true;
-        prompt.error = None;
         self.sudo_epoch = self.sudo_epoch.wrapping_add(1);
         let epoch = self.sudo_epoch;
+        let Some(prompt) = self.sudo_prompt_mut() else {
+            return;
+        };
+        prompt.inflight = true;
+        prompt.error = None;
         let mut password = std::mem::take(&mut prompt.password);
         let tx = self.tx.clone();
         thread::spawn(move || {
@@ -691,7 +715,7 @@ impl App {
     }
 
     fn cancel_sudo_prompt(&mut self) {
-        let Some(prompt) = self.sudo_prompt.take() else {
+        let Some(prompt) = self.take_sudo_prompt() else {
             return;
         };
         self.sudo_epoch = self.sudo_epoch.wrapping_add(1);
@@ -707,7 +731,7 @@ impl App {
     }
 
     fn sudo_authenticated(&mut self) {
-        let Some(prompt) = self.sudo_prompt.take() else {
+        let Some(prompt) = self.take_sudo_prompt() else {
             return;
         };
         self.push_log("sudo authenticated".to_string());
@@ -819,7 +843,7 @@ impl App {
     }
 
     fn begin_edit(&mut self, field: Field) {
-        self.mode = Mode::Edit(field);
+        self.modal = Modal::Edit(field);
         self.input = match field {
             Field::Portal => self.cfg.portal().to_string(),
             Field::Username => self.cfg.username().to_string(),
@@ -827,8 +851,9 @@ impl App {
     }
 
     fn commit_edit(&mut self) {
-        let Mode::Edit(field) = self.mode else {
-            return;
+        let field = match &self.modal {
+            Modal::Edit(field) => *field,
+            _ => return,
         };
         let mut value = self.input.trim().to_string();
         if field == Field::Portal {
@@ -851,11 +876,11 @@ impl App {
             self.error = None;
             self.set_notice("Config saved");
         }
-        self.mode = Mode::Normal;
+        self.modal = Modal::None;
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> bool {
-        if self.sudo_prompt.is_some() {
+        if self.sudo_prompt().is_some() {
             return self.handle_sudo_key(key);
         }
 
@@ -863,32 +888,32 @@ impl App {
             return self.request_quit();
         }
 
-        if self.help {
+        if matches!(&self.modal, Modal::Help) {
             if matches!(key.code, KeyCode::Char('?') | KeyCode::Esc) {
-                self.help = false;
+                self.modal = Modal::None;
             }
             return false;
         }
 
-        if self.quit_modal {
+        if matches!(&self.modal, Modal::Quit) {
             return self.handle_quit_modal(key);
         }
 
-        if self.profile_delete.is_some() {
+        if matches!(&self.modal, Modal::DeleteProfile(_)) {
             return self.handle_profile_delete(key);
         }
 
-        if let Mode::Search = self.mode {
+        if matches!(&self.modal, Modal::Search) {
             match key.code {
                 KeyCode::Enter => {
                     let query = self.input.trim().to_string();
                     self.log_search = if query.is_empty() { None } else { Some(query) };
                     self.log_follow = true;
                     self.log_from_bottom = 0;
-                    self.mode = Mode::Normal;
+                    self.modal = Modal::None;
                 }
                 KeyCode::Esc => {
-                    self.mode = Mode::Normal;
+                    self.modal = Modal::None;
                 }
                 KeyCode::Backspace => {
                     self.input.pop();
@@ -899,11 +924,11 @@ impl App {
             return false;
         }
 
-        if let Mode::RenameProfile = self.mode {
+        if matches!(&self.modal, Modal::RenameProfile) {
             match key.code {
                 KeyCode::Enter => self.commit_profile_rename(),
                 KeyCode::Esc => {
-                    self.mode = Mode::Normal;
+                    self.modal = Modal::None;
                 }
                 KeyCode::Backspace => {
                     self.input.pop();
@@ -914,11 +939,11 @@ impl App {
             return false;
         }
 
-        if let Mode::Edit(_) = self.mode {
+        if matches!(&self.modal, Modal::Edit(_)) {
             match key.code {
                 KeyCode::Enter => self.commit_edit(),
                 KeyCode::Esc => {
-                    self.mode = Mode::Normal;
+                    self.modal = Modal::None;
                 }
                 KeyCode::Backspace => {
                     self.input.pop();
@@ -940,7 +965,7 @@ impl App {
 
         match key.code {
             KeyCode::Char('?') => {
-                self.help = true;
+                self.modal = Modal::Help;
                 return false;
             }
             KeyCode::Tab => {
@@ -1017,7 +1042,7 @@ impl App {
             KeyCode::Char('g') => self.spawn_start_gpa(),
             KeyCode::Char('/') => {
                 self.page = Page::Logs;
-                self.mode = Mode::Search;
+                self.modal = Modal::Search;
                 self.input = self.log_search.clone().unwrap_or_default();
             }
             KeyCode::Char('L') => {
@@ -1139,8 +1164,7 @@ impl App {
 
     fn request_quit(&mut self) -> bool {
         if self.state.is_active() || self.gpclient_child.is_some() || self.busy {
-            self.help = false;
-            self.quit_modal = true;
+            self.modal = Modal::Quit;
             return false;
         }
         true
@@ -1149,13 +1173,16 @@ impl App {
     fn handle_quit_modal(&mut self, key: KeyEvent) -> bool {
         match key.code {
             KeyCode::Char('d') => {
-                self.quit_modal = false;
+                self.modal = Modal::None;
                 self.quit_and_disconnect();
                 self.should_quit
             }
-            KeyCode::Char('q') => true,
+            KeyCode::Char('q') => {
+                self.modal = Modal::None;
+                true
+            }
             KeyCode::Esc => {
-                self.quit_modal = false;
+                self.modal = Modal::None;
                 false
             }
             _ => false,
@@ -1412,13 +1439,13 @@ impl App {
             return;
         };
         self.input = name;
-        self.mode = Mode::RenameProfile;
+        self.modal = Modal::RenameProfile;
         self.page = Page::Profiles;
     }
 
     fn commit_profile_rename(&mut self) {
         let Some(old) = self.selected_profile_name() else {
-            self.mode = Mode::Normal;
+            self.modal = Modal::None;
             return;
         };
         let new = self.input.trim().to_string();
@@ -1439,7 +1466,7 @@ impl App {
             }
             Err(error) => self.set_notice(error),
         }
-        self.mode = Mode::Normal;
+        self.modal = Modal::None;
     }
 
     fn request_delete_profile(&mut self) {
@@ -1455,15 +1482,17 @@ impl App {
         {
             return;
         }
-        self.profile_delete = Some(name);
+        self.modal = Modal::DeleteProfile(name);
     }
 
     fn handle_profile_delete(&mut self, key: KeyEvent) -> bool {
+        let name = match &self.modal {
+            Modal::DeleteProfile(name) => name.clone(),
+            _ => return false,
+        };
         match key.code {
             KeyCode::Char('y') | KeyCode::Enter => {
-                let Some(name) = self.profile_delete.take() else {
-                    return false;
-                };
+                self.modal = Modal::None;
                 if self.cfg.delete_profile(&name) {
                     let _ = self.cfg.save();
                     self.profile_index = self
@@ -1473,7 +1502,7 @@ impl App {
                     self.set_notice(format!("Profile '{name}' deleted"));
                 }
             }
-            KeyCode::Char('n') | KeyCode::Esc => self.profile_delete = None,
+            KeyCode::Char('n') | KeyCode::Esc => self.modal = Modal::None,
             _ => {}
         }
         false
@@ -1559,7 +1588,7 @@ impl App {
                 match result {
                     Ok(()) => self.sudo_authenticated(),
                     Err(error) => {
-                        if let Some(prompt) = self.sudo_prompt.as_mut() {
+                        if let Some(prompt) = self.sudo_prompt_mut() {
                             prompt.inflight = false;
                             prompt.error = Some(error.clone());
                         }
@@ -1780,7 +1809,7 @@ mod tests {
         }
         app.handle_sudo_key(KeyEvent::from(KeyCode::Backspace));
 
-        let prompt = app.sudo_prompt.as_ref().unwrap();
+        let prompt = app.sudo_prompt().unwrap();
         assert_eq!(prompt.password, b"p");
         assert!(prompt.error.is_none());
     }
@@ -1791,7 +1820,7 @@ mod tests {
         app.open_sudo_prompt(SudoAction::Connect);
         app.submit_sudo();
 
-        let prompt = app.sudo_prompt.as_ref().unwrap();
+        let prompt = app.sudo_prompt().unwrap();
         assert_eq!(prompt.error.as_deref(), Some("password cannot be empty"));
         assert!(!prompt.inflight);
     }
@@ -1805,7 +1834,7 @@ mod tests {
 
         app.handle_sudo_key(KeyEvent::from(KeyCode::Esc));
 
-        assert!(app.sudo_prompt.is_none());
+        assert!(app.sudo_prompt().is_none());
         assert!(app.pending_cookie.is_none());
         assert!(app.sudo_cookie.is_none());
         assert_eq!(app.state, VpnState::Disconnected);
@@ -1821,7 +1850,7 @@ mod tests {
         // The run loop used to call this again on every tick.
         app.begin_sudo_connect("second".to_string());
 
-        let prompt = app.sudo_prompt.as_ref().unwrap();
+        let prompt = app.sudo_prompt().unwrap();
         assert_eq!(prompt.password, b"x");
         assert_eq!(app.sudo_cookie.as_deref(), Some("second"));
         assert!(app.pending_cookie.is_none());
@@ -1839,7 +1868,7 @@ mod tests {
 
         assert_eq!(app.state, VpnState::WaitingSudo);
         assert!(app.busy);
-        let prompt = app.sudo_prompt.as_ref().unwrap();
+        let prompt = app.sudo_prompt().unwrap();
         assert_eq!(prompt.action, SudoAction::Disconnect);
     }
 
