@@ -171,11 +171,10 @@ fn gpclient_snapshot() -> Snapshot {
         "Disconnected"
     };
 
-    let error = if lock.is_some() && !running {
-        Some("stale gpclient lock file".to_string())
-    } else {
-        None
-    };
+    // A leftover lock with a dead PID is harmless: gpclient rewrites it when
+    // the tunnel starts and its own is_running() check ignores dead PIDs. Do
+    // not present it as a problem; it clears itself on the next connect.
+    let error = None;
 
     Snapshot {
         backend: Backend::Gpclient,

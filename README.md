@@ -24,21 +24,26 @@ SAML/SSO/MFA stays in the system browser.
 Requires an Arch desktop session and `sudo` access for the tunnel.
 
 ```bash
-sudo pacman -S --needed rust globalprotect-openconnect
-
-cd gp-tui
+sudo pacman -S --needed git rust globalprotect-openconnect
+git clone https://github.com/MD2SA/gp-arch.git
+cd gp-arch/gp-tui
 ./install.sh
 gp-tui
 ```
 
+`install.sh` builds the release binary once and copies it to `~/.local/bin`.
+After that, run `gp-tui` directly; Rust is only needed to build it. Make sure
+`~/.local/bin` is in your `PATH`.
+
 On first start, enter your portal in the TUI. Press `c` to connect; the browser
-opens for SSO/MFA.
+opens for SSO/MFA, then the TUI asks for your sudo password in a masked prompt.
 
 ### Official CLI (requires the vendor tarball)
 
 Download `PanGPLinux-*.tgz` from your organisation's VPN page, then:
 
 ```bash
+cd gp-arch
 chmod +x gp_install_arch.sh
 sudo ./gp_install_arch.sh ~/Downloads/PanGPLinux-*.tgz
 
