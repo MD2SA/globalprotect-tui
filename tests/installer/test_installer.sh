@@ -161,6 +161,10 @@ chmod +x "$MOCK_BIN/pacman"
 
 printf 'ID=arch\nID_LIKE=\n' >"$WORK/arch-release"
 printf 'ID=debian\nID_LIKE=\n' >"$WORK/debian-release"
+# Ubuntu's os-release defines VERSION; sourcing it into the installer used to
+# fail with "VERSION: readonly variable". Keep this fixture close to real files.
+printf 'ID=ubuntu\nID_LIKE=debian\nVERSION="24.04 LTS (Noble Numbat)"\nVERSION_ID="24.04"\n' \
+    >"$WORK/versioned-release"
 
 # Build a deb (ar archive with control.tar.gz + data.tar.gz) from a root tree.
 make_deb() {
@@ -273,6 +277,19 @@ run_installer env \
 assert_rc "staging on a non-Arch os-release warns but succeeds" 0
 assert_output_contains "non-Arch distribution warning" "$LAST_ERR" \
     "targets Arch Linux"
+
+# Regression: os-release files on Ubuntu define VERSION. The installer must
+# not source them into its own namespace and die on a readonly variable.
+run_installer env \
+    PATH="$MOCK_BIN:$PATH" \
+    GP_OS_RELEASE="$WORK/versioned-release" \
+    GP_TEST_CALL_LOG="$CALL_LOG" \
+    bash "$INSTALLER" --stage "$WORK/stage-versioned" "$FIXTURE_TGZ"
+assert_rc "os-release VERSION does not break staging" 0
+assert_output_not_contains "sourcing os-release does not leak shell errors" \
+    "$LAST_ERR" "readonly variable"
+assert_output_contains "versioned os-release is still detected" "$LAST_ERR" \
+    "ID=ubuntu"
 
 run_installer env \
     PATH="$MOCK_BIN:$PATH" \

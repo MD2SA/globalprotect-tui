@@ -19,7 +19,9 @@
 set -euo pipefail
 
 readonly PROG="${0##*/}"
-readonly VERSION="0.1.5"
+# Do not call this VERSION: os-release files on several distributions define
+# VERSION, which would collide when the file is sourced.
+readonly SCRIPT_VERSION="0.1.6"
 readonly GP_DIR="/opt/paloaltonetworks/globalprotect"
 readonly SYSTEM_UNIT="/usr/lib/systemd/system/gpd.service"
 readonly USER_UNIT="/usr/lib/systemd/user/gpa.service"
@@ -37,7 +39,7 @@ DO_PURGE=0
 
 usage() {
     cat <<EOF
-$PROG $VERSION - install the official GlobalProtect CLI on Arch Linux
+$PROG $SCRIPT_VERSION - install the official GlobalProtect CLI on Arch Linux
 
 Usage:
   sudo $PROG PanGPLinux-*.tgz            # install CLI
@@ -91,12 +93,18 @@ require_root() {
 }
 
 check_platform() {
-    local strict="${1:-0}" id="" id_like=""
+    local strict="${1:-0}" id="" id_like="" fields=""
     if [ -r "$OS_RELEASE" ]; then
-        # shellcheck disable=SC1090
-        . "$OS_RELEASE"
-        id="${ID:-}"
-        id_like="${ID_LIKE:-}"
+        # Read os-release in a subshell. Sourcing it in this shell would let
+        # any field it defines (VERSION, NAME, HOME_URL, ...) overwrite the
+        # installer's own variables.
+        fields="$(
+            # shellcheck disable=SC1090
+            . "$OS_RELEASE" >/dev/null 2>&1 || true
+            printf '%s\n%s\n' "${ID:-}" "${ID_LIKE:-}"
+        )"
+        id="${fields%%$'\n'*}"
+        id_like="${fields#*$'\n'}"
     fi
     case " $id $id_like " in
     *" arch "*) ;;
