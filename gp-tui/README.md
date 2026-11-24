@@ -185,6 +185,9 @@ the browser; the sudo password is only passed to `sudo -v` from memory and is
 never persisted. Old single-profile configs are migrated automatically to a
 profile named `default`.
 
+Writes are atomic. If `config.toml` cannot be parsed, the TUI keeps a copy at
+`config.toml.bak` and starts with defaults instead of silently overwriting it.
+
 ## Testing and status
 
 The automated suite covers state handling, config parsing, backend arguments

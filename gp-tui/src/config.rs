@@ -112,7 +112,10 @@ impl Config {
         config.migrate();
         let contents = toml::to_string_pretty(&config)?;
         let temp = path.with_extension("toml.tmp");
-        std::fs::write(&temp, contents).with_context(|| format!("writing {}", temp.display()))?;
+        if let Err(error) = std::fs::write(&temp, contents) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(error).with_context(|| format!("writing {}", temp.display()));
+        }
         if let Err(error) = std::fs::rename(&temp, path) {
             let _ = std::fs::remove_file(&temp);
             return Err(error).with_context(|| format!("replacing {}", path.display()));

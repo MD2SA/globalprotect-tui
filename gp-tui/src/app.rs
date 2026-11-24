@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 const MAX_LOGS: usize = 300;
 
 pub enum Msg {
-    Snapshot(Snapshot),
+    Snapshot(u64, Snapshot),
     GpclientAuth(u64, Result<client::AuthResult, String>),
     GpclientDisconnected(Result<(), String>),
     SudoAuth(u64, Result<(), String>),
@@ -230,6 +230,7 @@ pub struct App {
     pub logs: VecDeque<String>,
     pub busy: bool,
     pub poll_inflight: bool,
+    poll_epoch: u64,
     pub modal: Modal,
     pub page: Page,
     pub config_index: usize,
@@ -278,6 +279,7 @@ impl App {
             logs: VecDeque::new(),
             busy: false,
             poll_inflight: false,
+            poll_epoch: 0,
             modal: Modal::None,
             page: Page::Status,
             config_index: 0,
@@ -415,11 +417,13 @@ impl App {
             return;
         }
         self.poll_inflight = true;
+        self.poll_epoch = self.poll_epoch.wrapping_add(1);
+        let epoch = self.poll_epoch;
         let tx = self.tx.clone();
         let preference = self.preference;
         thread::spawn(move || {
             let snapshot = client::snapshot(preference);
-            let _ = tx.send(Msg::Snapshot(snapshot));
+            let _ = tx.send(Msg::Snapshot(epoch, snapshot));
         });
     }
 
@@ -1344,6 +1348,10 @@ impl App {
             self.preference.label()
         ));
         self.set_notice(format!("Backend: {}", self.preference.as_str()));
+        // Ignore a poll that started with the old preference and allow the
+        // replacement poll to run immediately.
+        self.poll_epoch = self.poll_epoch.wrapping_add(1);
+        self.poll_inflight = false;
         self.spawn_refresh();
     }
 
@@ -1527,7 +1535,10 @@ impl App {
 
     fn handle_msg(&mut self, message: Msg) {
         match message {
-            Msg::Snapshot(snapshot) => {
+            Msg::Snapshot(epoch, snapshot) => {
+                if epoch != self.poll_epoch {
+                    return;
+                }
                 let previous = self.state;
                 self.backend = snapshot.backend;
                 self.installed = snapshot.installed;
@@ -1747,17 +1758,43 @@ mod tests {
         app.state = VpnState::Error;
         app.error = Some("connect failed".to_string());
 
-        app.handle_msg(Msg::Snapshot(Snapshot {
-            backend: Backend::Official,
-            installed: true,
-            status: "Disconnected".to_string(),
-            details: Details::default(),
-            gpa_active: false,
-            error: None,
-        }));
+        app.handle_msg(Msg::Snapshot(
+            app.poll_epoch,
+            Snapshot {
+                backend: Backend::Official,
+                installed: true,
+                status: "Disconnected".to_string(),
+                details: Details::default(),
+                gpa_active: false,
+                error: None,
+            },
+        ));
 
         assert_eq!(app.state, VpnState::Error);
         assert_eq!(app.error.as_deref(), Some("connect failed"));
+    }
+
+    #[test]
+    fn ignores_a_snapshot_from_the_previous_backend() {
+        let mut app = test_app();
+        app.backend = Backend::Gpclient;
+        app.poll_epoch = 2;
+        app.poll_inflight = true;
+
+        app.handle_msg(Msg::Snapshot(
+            1,
+            Snapshot {
+                backend: Backend::Official,
+                installed: true,
+                status: "Connected".to_string(),
+                details: Details::default(),
+                gpa_active: false,
+                error: None,
+            },
+        ));
+
+        assert_eq!(app.backend, Backend::Gpclient);
+        assert!(app.poll_inflight);
     }
 
     #[test]
