@@ -5,15 +5,26 @@ Arch Linux.
 
 The project has two parts:
 
-- **`gp_install_arch.sh`** installs the official GlobalProtect CLI from the
-  vendor `PanGPLinux-*.tgz` tarball, together with the systemd units and browser
-  callback handler that the vendor's Arch support is missing.
+- **`gp_install_arch.sh`** is the compatibility entry point for the Arch
+  installer in [`installers/arch/`](installers/arch/). It installs the official
+  GlobalProtect CLI from the vendor `PanGPLinux-*.tgz` tarball, together with
+  the systemd units and browser callback handler that the vendor's Arch support
+  is missing.
 - **`gp-tui`** is a small terminal frontend for connecting, disconnecting and
   inspecting status or logs. It works with either the official CLI or the free
   [`globalprotect-openconnect`][gpoc] backend.
 
 It is not a VPN implementation and does not store passwords or session cookies.
 SAML/SSO/MFA stays in the system browser.
+
+Repository layout:
+
+```
+gp-tui/           terminal UI and its tests
+installers/arch/  optional official-CLI installer and tests
+gp_install_arch.sh  root compatibility wrapper
+docs/             test and validation notes
+```
 
 [gpoc]: https://archlinux.org/packages/extra/x86_64/globalprotect-openconnect/
 
@@ -141,8 +152,9 @@ Run the installer regression suite from the repository root:
 
 ```bash
 bash -n gp_install_arch.sh
-bash -n tests/installer/test_installer.sh
-bash tests/installer/test_installer.sh
+bash -n installers/arch/gp_install_arch.sh
+bash -n installers/arch/tests/test_installer.sh
+bash installers/arch/tests/test_installer.sh
 ```
 
 Live VPN connections, real install/uninstall and suspend/resume behaviour are

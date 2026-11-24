@@ -26,8 +26,9 @@ Run the installer tests from the repository root:
 
 ```bash
 bash -n gp_install_arch.sh
-bash -n tests/installer/test_installer.sh
-bash tests/installer/test_installer.sh
+bash -n installers/arch/gp_install_arch.sh
+bash -n installers/arch/tests/test_installer.sh
+bash installers/arch/tests/test_installer.sh
 ```
 
 The installer suite builds a synthetic package and uses mocks for system

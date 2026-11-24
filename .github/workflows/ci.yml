@@ -30,10 +30,10 @@ jobs:
       - name: Install test dependencies
         run: sudo apt-get update && sudo apt-get install -y libarchive-tools binutils shellcheck
       - name: Shellcheck installer scripts
-        run: shellcheck gp_install_arch.sh tests/installer/test_installer.sh
+        run: shellcheck gp_install_arch.sh installers/arch/gp_install_arch.sh installers/arch/tests/test_installer.sh
       - name: Syntax check installer
-        run: bash -n gp_install_arch.sh
+        run: bash -n gp_install_arch.sh && bash -n installers/arch/gp_install_arch.sh
       - name: Syntax check installer tests
-        run: bash -n tests/installer/test_installer.sh
+        run: bash -n installers/arch/tests/test_installer.sh
       - name: Run installer regression tests
-        run: bash tests/installer/test_installer.sh
+        run: bash installers/arch/tests/test_installer.sh
